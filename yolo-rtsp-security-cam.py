@@ -31,6 +31,7 @@ parser.add_argument("--tail_length", default=8, type=int, choices=range(1,30), h
 parser.add_argument("--auto_delete", default=False, action=BooleanOptionalAction, help="Enables auto-delete feature. Recordings that have total length equal to the tail_length value (seconds) are assumed to be false positives and are auto-deleted.")
 parser.add_argument('--testing', default=False, action=BooleanOptionalAction, help="Testing mode disables recordings and prints out the motion value for each frame if greater than threshold. Helps fine tune the threshold value.")
 parser.add_argument('--frame_click', default=False, action=BooleanOptionalAction, help="Allows user to advance frames one by one by pressing any key. For use with testing mode on video files, not live streams, so set a video file instead of an RTSP address for the --stream argument.")
+parser.add_argument("--roi", type=str, default=None, help="Restrict YOLO detection to a region of the frame: x1,y1,x2,y2 in pixels. Useful for dual-lens cameras where only part of the frame covers your property.")
 args = vars(parser.parse_args())
 
 rtsp_stream = args["stream"]
@@ -50,6 +51,11 @@ if args["yolo"]:
     yolo_on = True
 else:
     yolo_on = False
+
+if args["roi"]:
+    roi = tuple(int(v) for v in args["roi"].split(","))
+else:
+    roi = None
 
 # Set up variables for YOLO detection
 if yolo_on:
@@ -246,7 +252,14 @@ def timer():
 def process_yolo():
     global img
 
-    results = model.predict(img, conf=CONFIDENCE, verbose=False)[0]
+    if roi:
+        x1, y1, x2, y2 = roi
+        detect_img = img[y1:y2, x1:x2]
+    else:
+        detect_img = img
+        x1, y1 = 0, 0
+
+    results = model.predict(detect_img, conf=CONFIDENCE, verbose=False)[0]
     object_found = False
 
     # Loop over the detections
@@ -254,11 +267,11 @@ def process_yolo():
         # Get the bounding box coordinates, confidence, and class id
         xmin, ymin, xmax, ymax, confidence, class_id = data
 
-        # Converting the coordinates and the class id to integers
-        xmin = int(xmin)
-        ymin = int(ymin)
-        xmax = int(xmax)
-        ymax = int(ymax)
+        # Converting the coordinates and the class id to integers, offset by ROI origin
+        xmin = int(xmin) + x1
+        ymin = int(ymin) + y1
+        xmax = int(xmax) + x1
+        ymax = int(ymax) + y1
         class_id = int(class_id)
 
         if labels[class_id] in yolo_list:
@@ -381,6 +394,8 @@ while loop:
 
         # Monitor the stream
         if monitor:
+            if roi:
+                cv2.rectangle(img, (roi[0], roi[1]), (roi[2], roi[3]), (0, 255, 0), 2)
             cv2.imshow(rtsp_stream, img)
             if frame_click:
                 cv_key = cv2.waitKey(0) & 0xFF
