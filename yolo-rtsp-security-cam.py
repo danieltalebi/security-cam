@@ -3,14 +3,16 @@
 
 # View the GNU AFFERO license found in the
 # LICENSE file in the root directory.
-
-import time
 import os
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
+import time
 import sys
 import cv2
 import queue
 import threading
 import numpy as np
+import json
+import subprocess
 from datetime import datetime
 from ffmpeg import FFmpeg
 from skimage.metrics import mean_squared_error as ssim
@@ -71,23 +73,44 @@ if yolo_on:
 
 # Set up other internal variables
 loop = True
-cap = cv2.VideoCapture(rtsp_stream)
-fps = cap.get(cv2.CAP_PROP_FPS)
+ffmpeg_pipe_proc = None
+
+def probe_stream_info(url):
+    cmd = [
+        'ffprobe', '-v', 'quiet', '-print_format', 'json',
+        '-show_streams', '-rtsp_transport', 'tcp', url
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    info = json.loads(result.stdout)
+    for stream in info['streams']:
+        if stream['codec_type'] == 'video':
+            w = stream['width']
+            h = stream['height']
+            fps_str = stream.get('r_frame_rate') or stream.get('avg_frame_rate', '25/1')
+            num, den = fps_str.split('/')
+            return w, h, float(num) / float(den)
+    raise RuntimeError("No video stream found in ffprobe output")
+
+print("Probing stream...")
+stream_width, stream_height, fps = probe_stream_info(rtsp_stream)
+print(f"Stream info: {stream_width}x{stream_height} @ {fps:.2f} fps")
+
 period = 1/fps
 tail_length = tail_length*fps
 recording = False
 ffmpeg_copy = 0
 activity_count = 0
 yolo_count = 0
-ret, img = cap.read()
-if img.shape[1]/img.shape[0] > 1.55:
-    res = (256,144)
+
+if stream_width / stream_height > 1.55:
+    res = (256, 144)
 else:
-    res = (216,162)
-blank = np.zeros((res[1],res[0]), np.uint8)
+    res = (216, 162)
+blank = np.zeros((res[1], res[0]), np.uint8)
+img = np.zeros((stream_height, stream_width, 3), np.uint8)
 resized_frame = cv2.resize(img, res)
-gray_frame = cv2.cvtColor(resized_frame,cv2.COLOR_BGR2GRAY)
-old_frame = cv2.GaussianBlur(gray_frame, (5,5), 0)
+gray_frame = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2GRAY)
+old_frame = cv2.GaussianBlur(gray_frame, (5, 5), 0)
 if monitor:
     cv2.namedWindow(rtsp_stream, cv2.WINDOW_NORMAL)
 
@@ -117,29 +140,55 @@ class suppress_stdout_stderr(object):
         self.outnull_file.close()
         self.errnull_file.close()
 
+def open_ffmpeg_pipe():
+    cmd = [
+        'ffmpeg', '-loglevel', 'quiet',
+        '-rtsp_transport', 'tcp',
+        '-i', rtsp_stream,
+        '-f', 'rawvideo', '-pix_fmt', 'bgr24',
+        'pipe:1',
+    ]
+    return subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        bufsize=10**8,
+    )
+
 q = queue.Queue()
 # Thread for receiving the stream's frames so they can be processed
 # If camera disconnects it will automatically try to reconnect every 5 seconds
 def receive_frames():
-    global cap
-    if cap.isOpened():
-        ret, frame = cap.read()
-        while loop:
-            ret, frame = cap.read()
-            if ret:
-                q.put(frame)
-            else:
-                if recording: stop_ffmpeg()
-                now_time = datetime.now().strftime('%H-%M-%S')
-                print(now_time + " Camera disconnected. Attempting to reconnect.")
-                while loop:
-                    with suppress_stdout_stderr():
-                        cap = cv2.VideoCapture(rtsp_stream)
-                    if cap.isOpened():
+    global ffmpeg_pipe_proc
+    frame_size = stream_width * stream_height * 3
+    proc = open_ffmpeg_pipe()
+    ffmpeg_pipe_proc = proc
+    while loop:
+        raw = proc.stdout.read(frame_size)
+        if len(raw) < frame_size:
+            if recording:
+                stop_ffmpeg()
+            now_time = datetime.now().strftime('%H-%M-%S')
+            print(now_time + " Camera disconnected. Attempting to reconnect.")
+            proc.kill()
+            proc = None
+            while loop:
+                time.sleep(5)
+                try:
+                    proc = open_ffmpeg_pipe()
+                    raw_test = proc.stdout.read(frame_size)
+                    if len(raw_test) == frame_size:
                         now_time = datetime.now().strftime('%H-%M-%S')
                         print(now_time + " Camera successfully reconnected.")
+                        ffmpeg_pipe_proc = proc
+                        q.put(np.frombuffer(raw_test, np.uint8).reshape((stream_height, stream_width, 3)).copy())
                         break
-                    else: time.sleep(5)
+                    proc.kill()
+                except Exception:
+                    if proc and proc.poll() is None:
+                        proc.kill()
+        else:
+            q.put(np.frombuffer(raw, np.uint8).reshape((stream_height, stream_width, 3)).copy())
 
 # Record the stream when object is detected
 def start_ffmpeg():
@@ -350,6 +399,8 @@ stop_listening()
 if ffmpeg_copy:
     ffmpeg_copy.terminate()
     ffmpeg_thread.join()
+if ffmpeg_pipe_proc and ffmpeg_pipe_proc.poll() is None:
+    ffmpeg_pipe_proc.kill()
 receive_thread.join()
 keyboard_thread.join()
 timer_thread.join()
