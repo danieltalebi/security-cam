@@ -3,7 +3,9 @@ Python RTSP security camera app with motion detection features that are based on
 
 ## Getting Started
 
-To get started, first make sure your system has the required software. If using a Debian/Ubuntu based distro, you can install the required software with the following:
+### Linux (Debian/Ubuntu)
+
+First make sure your system has the required software:
 
 ```bash
 sudo apt update
@@ -18,18 +20,31 @@ ROCm Guide: https://phazertech.com/tutorials/rocm.html
 
 It might be possible to run YOLO on the CPU, but it will be slow and I didn't test it, so you're highly encouraged to use GPU acceleration.
 
-Next, clone this repository:
+Clone this repository and install dependencies:
 
 ```bash
 git clone https://github.com/PhazerTech/yolo-rtsp-security-cam
-```
-
-Now install the required dependencies with pip:
-
-```bash
 cd yolo-rtsp-security-cam
 pip3 install -r requirements.txt
 ```
+
+### Windows
+
+**Requirements:**
+
+- **Python 3.11** — download from https://www.python.org/downloads/release/python-3119/ and check "Add Python to PATH" during installation. Python 3.11 is required because newer versions may not be supported by PyTorch.
+- **ffmpeg** — download the latest build from https://www.gyan.dev/ffmpeg/builds/, extract the zip, and add the `bin\` folder to your system PATH.
+- **GPU acceleration (recommended)** — install PyTorch with CUDA support before running setup: https://pytorch.org/get-started/locally/. Select Windows, Pip, Python, and your CUDA version, then run the generated install command. AMD GPUs are not supported on Windows (ROCm is Linux-only).
+
+Once the requirements are installed, clone the repository and run the setup script:
+
+```bat
+git clone https://github.com/PhazerTech/yolo-rtsp-security-cam
+cd yolo-rtsp-security-cam
+setup_windows.bat
+```
+
+Then open `run_windows.bat` in a text editor, set your `STREAM_URL` and other options, and double-click it to start the app. Close the terminal window to stop it.
 
 ## Running the App
 
@@ -81,6 +96,8 @@ The program doesn't constantly run YOLO object detection, instead it constantly 
 --testing - Testing mode disables recordings and prints out the motion value for each frame if greater than threshold. Helpful when fine tuning the threshold value.
 
 --frame_click - Allows the user to advance frames one by one by pressing any key. For use with testing mode on video files, not live streams, so make sure to provide a video file instead of an RTSP address for the --stream argument if using this feature.
+
+--roi - Restricts YOLO detection to a rectangular region of the frame, specified as x1,y1,x2,y2 in pixels. Useful for dual-lens cameras where the combined feed includes areas outside your property. Run with --monitor to see a green rectangle showing the monitored region, and adjust the coordinates until it covers only the desired area. Motion detection still uses the full frame, but YOLO only fires within the ROI. Example: --roi 0,0,640,720
 
 Check out my video about this app on my YouTube channel for more details: https://youtu.be/m8dIJN6ePKA
 
