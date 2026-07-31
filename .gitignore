@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store
+events/
+dataset/
+models/
+smart-monitor.json
+snapshot-*.jpg
+yolov8n.pt
+[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/

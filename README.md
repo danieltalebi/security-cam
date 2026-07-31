@@ -99,6 +99,99 @@ The program doesn't constantly run YOLO object detection, instead it constantly 
 
 --roi - Restricts YOLO detection to a rectangular region of the frame, specified as x1,y1,x2,y2 in pixels. Useful for dual-lens cameras where the combined feed includes areas outside your property. Run with --monitor to see a green rectangle showing the monitored region, and adjust the coordinates until it covers only the desired area. Motion detection still uses the full frame, but YOLO only fires within the ROI. Example: --roi 0,0,640,720
 
+### Smart monitoring for dual-lens cameras
+
+`--smart_config` enables separate rules for a fixed lens and a PTZ lens. Person detections are associated between frames so a zone can alert immediately (`immediate`) or only after the configured `dwell_seconds` (`dwell`). Events are printed as JSON and can optionally be appended to a JSONL file for a future Home Assistant, MQTT, or webhook integration.
+
+Copy `smart-monitor.example.json`, adjust the lens rectangles and zone polygons to the real stream, then run:
+
+```bash
+python3 yolo-rtsp-security-cam.py \
+  --stream "$CAMERA_GARAGE_RTSP_URL" \
+  --yolo person \
+  --smart_config smart-monitor.json \
+  --monitor
+```
+
+All coordinates use the original stream resolution. A person's bottom-center point (approximately their feet) determines the active region and zone. The monitor window draws lens regions in blue and rule zones in yellow to help calibration. `dwell_seconds`, matching distance, track timeout, alert cooldown, and detection interval are configurable.
+
+The example contains ONVIF connection placeholders but ONVIF position polling is not enabled yet. Credentials should be provided through environment variables when that stage is added; do not put camera passwords in the configuration file or repository.
+
+When the `onvif.enabled` setting is `true`, the monitor overlay shows the camera's current pan, tilt, and zoom. Install the updated dependencies, set the two environment variables named in the configuration, and keep the ONVIF endpoint and profile name in the JSON. Moving the mouse over the monitor shows the raw stream `X`/`Y` coordinate and a crosshair, which makes polygon calibration practical.
+
+If the overlay updates but its PTZ values do not change while the camera moves, run `onvif_diagnose.py` to query every ONVIF media profile and identify whether the camera exposes an absolute PTZ position at all.
+
+### Building a property classifier dataset
+
+The PTZ lens does not need to show the complete garage and sidewalk in every frame. The future classifier will segment only the visible part of each PTZ frame into `private_property`, `public_area`, and `unknown`. A person will be classified using the pixel beneath their feet; `unknown` means “do not alert yet” rather than making a risky guess.
+
+First collect varied, clean PTZ views. Start the monitor with a dataset directory:
+
+```bash
+python3 yolo-rtsp-security-cam.py \
+  --stream "$CAMERA_GARAGE_RTSP_URL" \
+  --yolo person \
+  --smart_config smart-monitor.json \
+  --monitor \
+  --dataset_dir dataset
+```
+
+When the camera has reached a useful view, focus the video window and press `C`. This writes the unannotated bottom/PTZ image to `dataset/raw/YYYY-MM-DD/`, together with a small JSON metadata file. Capture distinct positions—not consecutive copies—including the driveway, gate, sidewalk, far ends of the property, and ambiguous views, in daylight and at night. Begin with roughly 200–500 samples; include examples after the PTZ has tracked people, because those are the views the app must handle.
+
+The next step is to label the visible pixels in those images. Do not try to label an area that is off-screen: leave it as `unknown`.
+
+#### Local video labeler
+
+To label a local recording without uploading it anywhere, run:
+
+```bash
+python3 label_property_video.py \
+  --video /path/to/recording.mp4 \
+  --output_dir dataset/labels \
+  --step_seconds 2 \
+  --crop 0,1296,2304,2592
+```
+
+`--crop` is optional, but recommended for a combined stream: the example crops the lower/PTZ lens using this camera's 2304×2592 layout. The video window is the editor. Mark only the **public area** (sidewalk/street) with polygons: click to place points, press `Enter` to finish a polygon, and press `S` to save the current frame. Right-click removes the last unfinished point. The committed polygons remain while you move between frames, which is useful while the PTZ view is unchanged. `A`/`D` moves one frame; `J`/`L` jumps by the configured interval. `U` clears the working polygons when the view changes and `Q` exits.
+
+For every saved frame, the labeler creates a clean image, a single-channel PNG mask, and an editable JSON file under `dataset/labels/`. Pixel value `1` is `public_area`; every other pixel is `not_public`. The future classifier uses this as a public-area suppressor: a person whose feet are on a high-confidence public pixel does not trigger an alert. Only mark public ground that is visible in that frame.
+
+#### Train the public-area segmenter
+
+Once you have examples from multiple PTZ positions and lighting conditions, train locally:
+
+```bash
+python3 train_public_area.py \
+  --dataset_dir dataset/labels \
+  --output_dir models/public-area \
+  --epochs 40
+```
+
+The trainer splits whole source videos between training and validation, so its validation score is based on views the model did not train on. It prints pixel-level intersection-over-union (IoU), precision, and recall after each epoch and writes the best checkpoint to `models/public-area/model.pt`. Start with the default 40 epochs on CPU; the model is intentionally small. You can validate the dataset and see the chosen split without training by adding `--dry_run`.
+
+Preview the trained model over a video or the live combined stream:
+
+```bash
+python3 preview_public_area.py \
+  --model models/public-area/model.pt \
+  --stream "$CAMERA_GARAGE_RTSP_URL" \
+  --crop 0,1296,2304,2592
+```
+
+The preview paints pixels predicted as public area in orange. It is read-only: press `Q` to close it. Use `--threshold 0.7` to require greater confidence before marking an area as public, or `--every_n_frames 3` if CPU inference is too slow.
+
+#### DVRIP camera-event listener
+
+`dvrip_listen.py` is a read-only diagnostic listener for the camera's own push alarms. It subscribes to DVRIP `AlarmInfo` events; it does not change detection settings, PTZ position, or any camera configuration.
+
+```bash
+python3 -u dvrip_listen.py --config smart-monitor.json --duration 120
+```
+
+Trigger the camera's human detection during that time and retain the printed `ALARM` JSON. Different OEM firmware versions use different event payload fields, so this one-time check confirms how this specific camera identifies a human alarm before it is used to activate RTSP analysis.
+
+When `dvrip.listen_events` and `public_area_classifier.enabled` are enabled in `smart-monitor.json`, the main monitor uses the confirmed DVRIP human `Start` event to open a short RTSP analysis window. By default it keeps a single RTSP decoder warm (`dvrip.keep_rtsp_warm: true`), so the event is analysed using current frames immediately rather than waiting for an RTSP reconnection. This does not run YOLO while there is no event. A person in the fixed top lens alerts immediately. For the PTZ lens, a high-confidence public-area prediction suppresses the alert, a low probability alerts immediately, and intermediate values require the configured dwell time. The monitor shows public pixels in orange.
+
 Check out my video about this app on my YouTube channel for more details: https://youtu.be/m8dIJN6ePKA
 
 ## Contact & Support

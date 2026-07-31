@@ -14,6 +14,7 @@ import numpy as np
 import json
 import subprocess
 from datetime import datetime
+from urllib.parse import urlparse
 from ffmpeg import FFmpeg
 from skimage.metrics import mean_squared_error as ssim
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter, BooleanOptionalAction
@@ -21,7 +22,7 @@ from sshkeyboard import listen_keyboard, stop_listening
 
 # Parse command line arguments
 parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
-parser.add_argument("--stream", type=str, help="RTSP address of video stream.")
+parser.add_argument("--stream", type=str, default=os.environ.get("CAMERA_GARAGE_RTSP_URL"), help="RTSP address of video stream. Defaults to CAMERA_GARAGE_RTSP_URL.")
 parser.add_argument('--monitor', default=False, action=BooleanOptionalAction, help="View the live stream. If no monitor is connected then leave this disabled (no Raspberry Pi SSH sessions).")
 parser.add_argument("--yolo", type=str, help="Enables YOLO object detection. Enter a comma separated list of objects you'd like the program to record. The list can be found in the coco.names file")
 parser.add_argument("--model", default='yolov8n', type=str, help="Specify which model size you want to run. Default is the nano model.")
@@ -32,7 +33,13 @@ parser.add_argument("--auto_delete", default=False, action=BooleanOptionalAction
 parser.add_argument('--testing', default=False, action=BooleanOptionalAction, help="Testing mode disables recordings and prints out the motion value for each frame if greater than threshold. Helps fine tune the threshold value.")
 parser.add_argument('--frame_click', default=False, action=BooleanOptionalAction, help="Allows user to advance frames one by one by pressing any key. For use with testing mode on video files, not live streams, so set a video file instead of an RTSP address for the --stream argument.")
 parser.add_argument("--roi", type=str, default=None, help="Restrict YOLO detection to a region of the frame: x1,y1,x2,y2 in pixels. Useful for dual-lens cameras where only part of the frame covers your property.")
+parser.add_argument("--smart_config", type=str, default=None, help="JSON configuration for dual-lens zones, person tracking, dwell time, and alert events. Requires --yolo person.")
+parser.add_argument("--dataset_dir", type=str, default=None, help="Directory for manually saved clean PTZ samples. With --monitor, press C to save the current PTZ view for classifier training.")
+parser.add_argument("--dvrip_events", default=None, action=BooleanOptionalAction, help="Use camera DVRIP human-detection events to activate short RTSP analysis windows.")
 args = vars(parser.parse_args())
+
+if not args["stream"]:
+    parser.error("provide --stream or set CAMERA_GARAGE_RTSP_URL")
 
 rtsp_stream = args["stream"]
 monitor = args["monitor"]
@@ -57,6 +64,45 @@ if args["roi"]:
 else:
     roi = None
 
+smart_monitor = None
+smart_detection_interval = 0.25
+ptz_poller = None
+dataset_dir = args["dataset_dir"]
+property_alert_engine = None
+public_area_classifier = None
+public_area_probability = None
+dvrip_event_mode = False
+dvrip_config = {}
+if args["smart_config"]:
+    if not yolo_on or "person" not in yolo_list:
+        parser.error("--smart_config requires --yolo to include person")
+    from smart_monitor import SmartMonitor
+    with open(args["smart_config"], encoding="utf-8") as smart_config_file:
+        smart_config = json.load(smart_config_file)
+    smart_monitor = SmartMonitor(smart_config)
+    smart_detection_interval = float(smart_config.get("detection", {}).get("interval_seconds", 0.25))
+    if smart_config.get("onvif", {}).get("enabled", False):
+        from ptz_status import PtzStatusPoller
+        ptz_poller = PtzStatusPoller(smart_config["onvif"])
+    classifier_config = smart_config.get("public_area_classifier", {})
+    if classifier_config.get("enabled", False):
+        from public_area import PublicAreaClassifier
+        from property_alerts import PropertyAlertEngine
+        model_path = classifier_config.get("model_path", "models/public-area/model.pt")
+        if not os.path.exists(model_path):
+            parser.error(f"Public-area model was not found: {model_path}")
+        public_area_classifier = PublicAreaClassifier(model_path, tuple(smart_config["layout"]["ptz"]), classifier_config.get("device", "auto"))
+        property_alert_engine = PropertyAlertEngine(smart_config, smart_monitor.event_sink.emit)
+    dvrip_config = smart_config.get("dvrip", {})
+    dvrip_event_mode = dvrip_config.get("listen_events", False) if args["dvrip_events"] is None else args["dvrip_events"]
+
+if dataset_dir and not monitor:
+    parser.error("--dataset_dir requires --monitor so you can save samples with the C key")
+if dataset_dir and not smart_monitor:
+    parser.error("--dataset_dir requires --smart_config so the PTZ portion of the combined stream is known")
+if dvrip_event_mode and not smart_monitor:
+    parser.error("--dvrip_events requires --smart_config with DVRIP settings")
+
 # Set up variables for YOLO detection
 if yolo_on:
     from ultralytics import YOLO
@@ -80,22 +126,65 @@ if yolo_on:
 # Set up other internal variables
 loop = True
 ffmpeg_pipe_proc = None
+analysis_stream_enabled = threading.Event()
+analysis_lock = threading.Lock()
+analysis_deadline = 0.0
+analysis_seconds = float(dvrip_config.get("analysis_seconds", 10))
+# Keeping one low-latency RTSP decoder open avoids losing the subject while
+# ffmpeg negotiates a brand-new RTSP session after the camera's alarm.  DVRIP
+# still controls *when* YOLO/classification runs; it does not keep inference
+# running continuously.
+keep_rtsp_warm = bool(dvrip_config.get("keep_rtsp_warm", dvrip_event_mode))
+dvrip_listener = None
+
+if not dvrip_event_mode:
+    analysis_stream_enabled.set()
+
+
+def activate_event_analysis(event):
+    """Open or extend the RTSP analysis window only for confirmed human starts."""
+    global analysis_deadline
+    if event.get("type") != "person" or event.get("status") != "Start":
+        return
+    with analysis_lock:
+        analysis_deadline = max(analysis_deadline, time.monotonic() + analysis_seconds)
+        analysis_stream_enabled.set()
+    print("DVRIP human event: RTSP analysis window opened")
+
+
+def analysis_window_active() -> bool:
+    if not dvrip_event_mode:
+        return True
+    with analysis_lock:
+        return time.monotonic() < analysis_deadline
 
 def probe_stream_info(url):
     cmd = [
-        'ffprobe', '-v', 'quiet', '-print_format', 'json',
+        'ffprobe', '-v', 'error', '-print_format', 'json',
         '-show_streams', '-rtsp_transport', 'tcp', url
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-    info = json.loads(result.stdout)
-    for stream in info['streams']:
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    except FileNotFoundError as error:
+        raise RuntimeError("ffprobe was not found. Install ffmpeg and ensure ffprobe is on PATH.") from error
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError("Timed out while connecting to the video stream.") from error
+
+    try:
+        info = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as error:
+        raise RuntimeError("ffprobe returned invalid output while probing the video stream.") from error
+
+    for stream in info.get('streams', []):
         if stream['codec_type'] == 'video':
             w = stream['width']
             h = stream['height']
             fps_str = stream.get('r_frame_rate') or stream.get('avg_frame_rate', '25/1')
             num, den = fps_str.split('/')
             return w, h, float(num) / float(den)
-    raise RuntimeError("No video stream found in ffprobe output")
+    details = (result.stderr or "No video stream was returned").strip()
+    # Do not include the URL here because RTSP URLs commonly contain credentials.
+    raise RuntimeError(f"Could not open a video stream with ffprobe: {details}")
 
 print("Probing stream...")
 stream_width, stream_height, fps = probe_stream_info(rtsp_stream)
@@ -107,6 +196,8 @@ recording = False
 ffmpeg_copy = 0
 activity_count = 0
 yolo_count = 0
+last_smart_detection = 0.0
+last_smart_result = {"object_found": False, "person_found": False, "alert": False}
 
 if stream_width / stream_height > 1.55:
     res = (256, 144)
@@ -114,11 +205,99 @@ else:
     res = (216, 162)
 blank = np.zeros((res[1], res[0]), np.uint8)
 img = np.zeros((stream_height, stream_width, 3), np.uint8)
+# Keep a clean copy for the training dataset. The monitor image receives YOLO
+# boxes and calibration overlays, neither of which belongs in training data.
+raw_img = img.copy()
 resized_frame = cv2.resize(img, res)
 gray_frame = cv2.cvtColor(resized_frame, cv2.COLOR_BGR2GRAY)
 old_frame = cv2.GaussianBlur(gray_frame, (5, 5), 0)
 if monitor:
-    cv2.namedWindow(rtsp_stream, cv2.WINDOW_NORMAL)
+    # Keep the composite stream's original aspect ratio. Without this flag a
+    # manually resized HighGUI window can make calibration overlays look wrong.
+    cv2.namedWindow(rtsp_stream, cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)
+
+mouse_position = None
+
+def monitor_mouse(event, x, y, _flags, _userdata):
+    """Convert monitor-window coordinates back to raw stream coordinates."""
+    global mouse_position
+    if event != cv2.EVENT_MOUSEMOVE:
+        return
+    try:
+        _, _, displayed_width, displayed_height = cv2.getWindowImageRect(rtsp_stream)
+    except cv2.error:
+        displayed_width, displayed_height = stream_width, stream_height
+    displayed_width = displayed_width or stream_width
+    displayed_height = displayed_height or stream_height
+    mouse_position = (
+        max(0, min(stream_width - 1, round(x * stream_width / displayed_width))),
+        max(0, min(stream_height - 1, round(y * stream_height / displayed_height))),
+    )
+
+if monitor:
+    cv2.setMouseCallback(rtsp_stream, monitor_mouse)
+
+
+def save_ptz_sample():
+    """Save the current unannotated PTZ crop and enough metadata to label it later."""
+    if not dataset_dir or not smart_monitor:
+        return
+
+    ptz_region = smart_monitor.regions.get("ptz")
+    if not ptz_region:
+        print("Dataset sample was not saved: smart config has no 'ptz' layout region.")
+        return
+
+    x1, y1, x2, y2 = ptz_region.bounds
+    sample = raw_img[y1:y2, x1:x2]
+    if sample.size == 0:
+        print("Dataset sample was not saved: PTZ bounds are outside the current stream.")
+        return
+
+    captured_at = datetime.now()
+    folder = os.path.join(dataset_dir, "raw", captured_at.strftime("%Y-%m-%d"))
+    os.makedirs(folder, exist_ok=True)
+    stem = captured_at.strftime("ptz_%Y%m%d_%H%M%S_%f")
+    image_path = os.path.join(folder, stem + ".jpg")
+    metadata_path = os.path.join(folder, stem + ".json")
+
+    if not cv2.imwrite(image_path, sample, [cv2.IMWRITE_JPEG_QUALITY, 95]):
+        print("Dataset sample was not saved: OpenCV could not write the JPEG.")
+        return
+
+    metadata = {
+        "captured_at": captured_at.astimezone().isoformat(),
+        "source_resolution": [stream_width, stream_height],
+        "ptz_bounds_in_source": [x1, y1, x2, y2],
+        "sample_resolution": [int(sample.shape[1]), int(sample.shape[0])],
+        "label_status": "unlabeled",
+    }
+    if ptz_poller:
+        status = ptz_poller.snapshot()
+        metadata["onvif_status"] = {
+            key: status.get(key) for key in ("state", "profile", "pan", "tilt", "zoom", "updated_at")
+        }
+    with open(metadata_path, "w", encoding="utf-8") as metadata_file:
+        json.dump(metadata, metadata_file, ensure_ascii=False, indent=2)
+    print(f"Saved PTZ classifier sample: {image_path}")
+
+if ptz_poller:
+    ptz_poller.start()
+
+if dvrip_event_mode:
+    from dvrip_events import DVRIPAlarmListener
+    endpoint = urlparse(smart_config["onvif"]["device_service"])
+    dvrip_host = dvrip_config.get("host", endpoint.hostname)
+    dvrip_port = int(dvrip_config.get("port", 34567))
+    dvrip_username = os.environ.get(dvrip_config.get("username_env", "CAMERA_DVRIP_USER")) or os.environ.get(smart_config["onvif"].get("username_env", "CAMERA_ONVIF_USER"))
+    dvrip_password = os.environ.get(dvrip_config.get("password_env", "CAMERA_DVRIP_PASSWORD")) or os.environ.get(smart_config["onvif"].get("password_env", "CAMERA_ONVIF_PASSWORD"))
+    if not dvrip_host or not dvrip_username or not dvrip_password:
+        parser.error("DVRIP events require the credential variables named in smart-monitor.json")
+    dvrip_listener = DVRIPAlarmListener(
+        dvrip_host, dvrip_port, dvrip_username, dvrip_password,
+        on_event=activate_event_analysis,
+        on_status=lambda message: print("DVRIP " + message),
+    )
 
 # used to suppress C errors from ffmpeg library when trying to reconnect camera
 class suppress_stdout_stderr(object):
@@ -150,6 +329,11 @@ def open_ffmpeg_pipe():
     cmd = [
         'ffmpeg', '-loglevel', 'quiet',
         '-rtsp_transport', 'tcp',
+        # Bound stalled network reads. This is especially important because
+        # this process writes raw frames to a pipe and the reader otherwise
+        # has no frame-level timeout of its own.
+        '-rw_timeout', '5000000',
+        '-fflags', 'nobuffer', '-flags', 'low_delay',
         '-i', rtsp_stream,
         '-f', 'rawvideo', '-pix_fmt', 'bgr24',
         'pipe:1',
@@ -161,40 +345,61 @@ def open_ffmpeg_pipe():
         bufsize=10**8,
     )
 
-q = queue.Queue()
-# Thread for receiving the stream's frames so they can be processed
-# If camera disconnects it will automatically try to reconnect every 5 seconds
+q = queue.Queue(maxsize=2)
+
+
+def queue_latest_frame(frame):
+    """Keep RTSP latency bounded while inference is slower than the camera."""
+    while True:
+        try:
+            q.put_nowait(frame)
+            return
+        except queue.Full:
+            try:
+                q.get_nowait()
+            except queue.Empty:
+                return
+
+
+# Thread for receiving stream frames. In DVRIP mode the default is to keep the
+# decoder warm, so a DVRIP Start can analyse an already-current frame instead
+# of waiting several seconds for a new RTSP handshake.
 def receive_frames():
     global ffmpeg_pipe_proc
     frame_size = stream_width * stream_height * 3
-    proc = open_ffmpeg_pipe()
-    ffmpeg_pipe_proc = proc
+    proc = None
     while loop:
-        raw = proc.stdout.read(frame_size)
-        if len(raw) < frame_size:
-            if recording:
-                stop_ffmpeg()
-            now_time = datetime.now().strftime('%H-%M-%S')
-            print(now_time + " Camera disconnected. Attempting to reconnect.")
-            proc.kill()
+        should_receive = keep_rtsp_warm or analysis_stream_enabled.is_set()
+        if not should_receive:
+            if proc and proc.poll() is None:
+                proc.kill()
             proc = None
-            while loop:
-                time.sleep(5)
-                try:
-                    proc = open_ffmpeg_pipe()
-                    raw_test = proc.stdout.read(frame_size)
-                    if len(raw_test) == frame_size:
-                        now_time = datetime.now().strftime('%H-%M-%S')
-                        print(now_time + " Camera successfully reconnected.")
-                        ffmpeg_pipe_proc = proc
-                        q.put(np.frombuffer(raw_test, np.uint8).reshape((stream_height, stream_width, 3)).copy())
-                        break
-                    proc.kill()
-                except Exception:
-                    if proc and proc.poll() is None:
-                        proc.kill()
-        else:
-            q.put(np.frombuffer(raw, np.uint8).reshape((stream_height, stream_width, 3)).copy())
+            ffmpeg_pipe_proc = None
+            # Do not wait indefinitely here: a later DVRIP event wakes the
+            # receiver on the next short polling interval.
+            time.sleep(0.10)
+            continue
+        if proc is None:
+            try:
+                proc = open_ffmpeg_pipe()
+                ffmpeg_pipe_proc = proc
+                print(datetime.now().strftime('%H-%M-%S') + " RTSP analysis connected")
+            except Exception:
+                time.sleep(2)
+                continue
+        raw = proc.stdout.read(frame_size)
+        if len(raw) != frame_size:
+            if proc.poll() is None:
+                proc.kill()
+            proc = None
+            ffmpeg_pipe_proc = None
+            if analysis_stream_enabled.is_set():
+                print(datetime.now().strftime('%H-%M-%S') + " RTSP unavailable; retrying")
+                time.sleep(2)
+            continue
+        queue_latest_frame(np.frombuffer(raw, np.uint8).reshape((stream_height, stream_width, 3)).copy())
+    if proc and proc.poll() is None:
+        proc.kill()
 
 # Record the stream when object is detected
 def start_ffmpeg():
@@ -250,7 +455,7 @@ def timer():
 
 # Process YOLO object detection
 def process_yolo():
-    global img
+    global img, public_area_probability
 
     if roi:
         x1, y1, x2, y2 = roi
@@ -261,6 +466,7 @@ def process_yolo():
 
     results = model.predict(detect_img, conf=CONFIDENCE, verbose=False)[0]
     object_found = False
+    person_boxes = []
 
     # Loop over the detections
     for data in results.boxes.data.tolist():
@@ -276,6 +482,8 @@ def process_yolo():
 
         if labels[class_id] in yolo_list:
             object_found = True
+        if labels[class_id] == "person":
+            person_boxes.append((xmin, ymin, xmax, ymax))
 
         # Draw a bounding box rectangle and label on the image
         color = [int(c) for c in colors[class_id]]
@@ -294,12 +502,49 @@ def process_yolo():
         cv2.putText(img, text, (xmin, ymin - 5), cv2.FONT_HERSHEY_SIMPLEX,
             fontScale=font_scale, color=(0, 0, 0), thickness=thickness)
 
-    return object_found
+    now = time.time()
+    if property_alert_engine:
+        # One segmentation inference per YOLO pass, then use the feet point of
+        # each PTZ person against that probability map.
+        public_area_probability = public_area_classifier.predict(raw_img)
+        events = property_alert_engine.process(person_boxes, public_area_classifier.probability_at, now)
+    else:
+        events = smart_monitor.process(person_boxes, now) if smart_monitor else []
+    return {
+        "object_found": object_found,
+        "person_found": bool(person_boxes),
+        "alert": bool(events),
+    }
+
+
+def start_recording():
+    """Start copying the raw stream after a legacy detection or smart event."""
+    global ffmpeg_copy, recording, ffmpeg_thread, filename
+    filedate = datetime.now().strftime('%H-%M-%S')
+    if not testing:
+        folderdate = datetime.now().strftime('%Y-%m-%d')
+        if not os.path.isdir(folderdate):
+            os.mkdir(folderdate)
+        filename = '%s/%s.mkv' % (folderdate, filedate)
+        ffmpeg_copy = (
+            FFmpeg()
+            .option("y")
+            .input(rtsp_stream, rtsp_transport="tcp", rtsp_flags="prefer_tcp")
+            .output(filename, vcodec="copy", acodec="copy")
+        )
+        ffmpeg_thread = threading.Thread(target=start_ffmpeg)
+        ffmpeg_thread.start()
+        print(filedate + " recording started")
+    else:
+        print(filedate + " recording started - Testing mode")
+    recording = True
 
 
 # Start the background threads
 receive_thread = threading.Thread(target=receive_frames)
 receive_thread.start()
+if dvrip_listener:
+    dvrip_listener.start()
 keyboard_thread = threading.Thread(target=input_keyboard)
 keyboard_thread.start()
 timer_thread = threading.Thread(target=timer)
@@ -307,8 +552,11 @@ timer_thread.start()
 
 # Main loop
 while loop:
+    if dvrip_event_mode and not recording and not analysis_window_active():
+        analysis_stream_enabled.clear()
     if q.empty() != True:
-        img = q.get()
+        raw_img = q.get()
+        img = raw_img.copy()
 
         # Resize image, make it grayscale, then blur it
         resized_frame = cv2.resize(img, res)
@@ -329,47 +577,49 @@ while loop:
         # If the number of these frames exceeds start_frames value, run YOLO detection.
         # Start recording if an object from the user provided list is detected
         if not recording:
-            if ssim_val > thresh:
-                activity_count += 1
-                if activity_count >= start_frames:
-                    if yolo_on:
-                        if process_yolo():
-                            yolo_count += 1
-                        else:
-                            yolo_count = 0
-                    if not yolo_on or yolo_count > 1:
-                        filedate = datetime.now().strftime('%H-%M-%S')
-                        if not testing:
-                            folderdate = datetime.now().strftime('%Y-%m-%d')
-                            if not os.path.isdir(folderdate):
-                                os.mkdir(folderdate)
-                            filename = '%s/%s.mkv' % (folderdate,filedate)
-                            ffmpeg_copy = (
-                                FFmpeg()
-                                .option("y")
-                                .input(
-                                    rtsp_stream,
-                                    rtsp_transport="tcp",
-                                    rtsp_flags="prefer_tcp",
-                                )
-                                .output(filename, vcodec="copy", acodec="copy")
-                            )
-                            ffmpeg_thread = threading.Thread(target=start_ffmpeg)
-                            ffmpeg_thread.start()
-                            print(filedate + " recording started")
-                        else:
-                            print(filedate + " recording started - Testing mode")
-                        recording = True
-                        activity_count = 0
-                        yolo_count = 0
+            now = time.time()
+            if dvrip_event_mode:
+                # A DVRIP human alarm already opened this window. Run YOLO even
+                # if the person has stopped moving before RTSP connected.
+                if yolo_on and now - last_smart_detection >= smart_detection_interval:
+                    last_smart_result = process_yolo()
+                    last_smart_detection = now
+                if last_smart_result["alert"]:
+                    start_recording()
+                    last_smart_result["alert"] = False
             else:
-                activity_count = 0
-                yolo_count = 0
+                smart_track_active = smart_monitor and smart_monitor.has_active_tracks(now)
+                if ssim_val > thresh or smart_track_active:
+                    activity_count += 1
+                    if activity_count >= start_frames:
+                        if yolo_on:
+                            if smart_monitor:
+                                if now - last_smart_detection >= smart_detection_interval:
+                                    last_smart_result = process_yolo()
+                                    last_smart_detection = now
+                            else:
+                                result = process_yolo()
+                                if result["object_found"]:
+                                    yolo_count += 1
+                                else:
+                                    yolo_count = 0
+                        smart_trigger = smart_monitor and last_smart_result["alert"]
+                        legacy_trigger = not smart_monitor and (not yolo_on or yolo_count > 1)
+                        if smart_trigger or legacy_trigger:
+                            start_recording()
+                            activity_count = 0
+                            yolo_count = 0
+                            last_smart_result["alert"] = False
+                else:
+                    activity_count = 0
+                    yolo_count = 0
 
         # If already recording, count the number of frames where there's no motion activity
         # or no object detected and stop recording if it exceeds the tail_length value
         else:
-            if yolo_on and not process_yolo() or not yolo_on and ssim_val < thresh:
+            detection_result = process_yolo() if yolo_on else None
+            no_relevant_object = yolo_on and not detection_result["object_found"]
+            if no_relevant_object or not yolo_on and ssim_val < thresh:
                 activity_count += 1
                 if activity_count >= tail_length:
                     filedate = datetime.now().strftime('%H-%M-%S')
@@ -396,16 +646,59 @@ while loop:
         if monitor:
             if roi:
                 cv2.rectangle(img, (roi[0], roi[1]), (roi[2], roi[3]), (0, 255, 0), 2)
+            if public_area_probability is not None and public_area_classifier:
+                x1, y1, x2, y2 = public_area_classifier.ptz_bounds
+                public_mask = public_area_probability >= property_alert_engine.public_threshold
+                ptz_overlay = img[y1:y2, x1:x2]
+                public_color = np.array((0, 165, 255), dtype=np.float32)
+                ptz_overlay[public_mask] = (0.58 * ptz_overlay[public_mask] + 0.42 * public_color).astype(np.uint8)
+            if smart_monitor:
+                for region in smart_monitor.regions.values():
+                    x1, y1, x2, y2 = region.bounds
+                    cv2.rectangle(img, (x1, y1), (x2, y2), (255, 180, 0), 2)
+                    cv2.putText(img, region.name, (x1 + 8, y1 + 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 180, 0), 2)
+                for zone in smart_monitor.zones:
+                    points = np.array(zone.polygon, dtype=np.int32)
+                    cv2.polylines(img, [points], True, (0, 255, 255), 2)
+                    zx, zy = points[0]
+                    cv2.putText(img, zone.name, (int(zx) + 8, int(zy) + 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            if mouse_position:
+                mx, my = mouse_position
+                cv2.drawMarker(img, (mx, my), (255, 255, 0), cv2.MARKER_CROSS, 28, 2)
+                cv2.putText(img, f"X: {mx}  Y: {my}", (mx + 14, my - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+            if ptz_poller:
+                ptz_status = ptz_poller.snapshot()
+                if ptz_status["state"] == "connected":
+                    age = time.monotonic() - ptz_status["updated_at"] if ptz_status["updated_at"] else -1
+                    ptz_text = "PTZ {} #{} age={:.1f}s  pan={:.4f}  tilt={:.4f}  zoom={:.4f}".format(
+                        ptz_status["profile"] or "unknown",
+                        ptz_status["poll_count"],
+                        age,
+                        ptz_status["pan"] or 0, ptz_status["tilt"] or 0, ptz_status["zoom"] or 0
+                    )
+                else:
+                    ptz_text = "PTZ " + ptz_status["state"]
+                cv2.putText(img, ptz_text, (20, stream_height - 24), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 0), 2)
+            if dataset_dir:
+                cv2.putText(img, "C: save clean PTZ classifier sample", (20, stream_height - 58), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            if dvrip_event_mode:
+                event_text = "DVRIP: analyzing" if analysis_window_active() or recording else "DVRIP: waiting for human event"
+                cv2.putText(img, event_text, (20, 86), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (0, 255, 255), 2)
             cv2.imshow(rtsp_stream, img)
             if frame_click:
                 cv_key = cv2.waitKey(0) & 0xFF
                 if cv_key == ord("q"):
                     loop = False
+                elif cv_key == ord("c"):
+                    save_ptz_sample()
                 if cv_key == ord("n"):
                     continue
             else:
-                if cv2.waitKey(1) & 0xFF == ord('q'):
+                cv_key = cv2.waitKey(1) & 0xFF
+                if cv_key == ord('q'):
                     loop = False
+                elif cv_key == ord('c'):
+                    save_ptz_sample()
     else:
         time.sleep(period/2)
 
@@ -416,6 +709,10 @@ if ffmpeg_copy:
     ffmpeg_thread.join()
 if ffmpeg_pipe_proc and ffmpeg_pipe_proc.poll() is None:
     ffmpeg_pipe_proc.kill()
+if ptz_poller:
+    ptz_poller.stop()
+if dvrip_listener:
+    dvrip_listener.stop()
 receive_thread.join()
 keyboard_thread.join()
 timer_thread.join()

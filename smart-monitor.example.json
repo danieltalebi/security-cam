@@ -1,0 +1,75 @@
+{
+  "layout": {
+    "fixed": [0, 0, 3072, 1024],
+    "ptz": [0, 1024, 3072, 2048]
+  },
+  "detection": {
+    "interval_seconds": 0.25
+  },
+  "tracking": {
+    "match_distance_pixels": 180,
+    "stationary_tolerance_pixels": 40,
+    "track_timeout_seconds": 2.0,
+    "alert_cooldown_seconds": 30.0
+  },
+  "zones": [
+    {
+      "name": "interior_fixed",
+      "region": "fixed",
+      "rule": "immediate",
+      "polygon": [[0, 0], [3072, 0], [3072, 1024], [0, 1024]]
+    },
+    {
+      "name": "garage",
+      "region": "ptz",
+      "rule": "immediate",
+      "polygon": [[900, 1250], [2200, 1250], [2500, 2048], [600, 2048]]
+    },
+    {
+      "name": "sidewalk",
+      "region": "ptz",
+      "rule": "dwell",
+      "dwell_seconds": 8,
+      "polygon": [[0, 1024], [3072, 1024], [3072, 1500], [0, 1500]]
+    }
+  ],
+  "events": {
+    "jsonl_path": "events/security-events.jsonl"
+  },
+  "onvif": {
+    "enabled": false,
+    "device_service": "http://CAMERA_IP:8899/onvif/device_service",
+    "username_env": "CAMERA_ONVIF_USER",
+    "password_env": "CAMERA_ONVIF_PASSWORD",
+    "profile_name": "mainStream",
+    "poll_seconds": 1
+  },
+  "dvrip": {
+    "port": 34567,
+    "username_env": "CAMERA_DVRIP_USER",
+    "password_env": "CAMERA_DVRIP_PASSWORD",
+    "listen_events": false,
+    "analysis_seconds": 10,
+    "keep_rtsp_warm": true,
+    "notification_cooldown_seconds": 40
+  },
+  "snapshot": {
+    "url": "http://CAMERA_IP/webcapture.jpg?command=snap&channel=0",
+    "xmeye_query_auth": true,
+    "review_dir": "events/review",
+    "video_fallback_seconds": 8,
+    "video_sample_seconds": 0.8
+  },
+  "telegram": {
+    "token_env": "TELEGRAM_BOT_TOKEN",
+    "chat_id_env": "TELEGRAM_CHAT_ID"
+  },
+  "public_area_classifier": {
+    "enabled": false,
+    "model_path": "models/public-area/model.pt",
+    "public_threshold": 0.65,
+    "private_threshold": 0.35,
+    "uncertain_dwell_seconds": 8,
+    "device": "auto"
+  }
+}
