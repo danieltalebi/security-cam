@@ -9,6 +9,8 @@ from urllib.request import Request, urlopen
 
 class TelegramNotifier:
     def __init__(self, token: str, chat_id: str):
+        if any(ord(character) < 32 or ord(character) == 127 for character in token):
+            raise ValueError("TELEGRAM_BOT_TOKEN contains a control character; re-enter it with the Windows setup assistant.")
         self.token, self.chat_id = token, chat_id
 
     def send_photo(self, image: bytes, caption: str) -> None:

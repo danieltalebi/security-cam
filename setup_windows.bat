@@ -63,11 +63,9 @@ echo     2. Set STREAM_URL and other options
 echo     3. Double-click run_windows.bat to start
 echo.
 echo   Smart DVRIP + Telegram monitoring:
-echo     1. Copy smart-monitor.example.json to smart-monitor.json
-echo     2. Adjust the layout, snapshot URL and camera endpoint in smart-monitor.json
-echo     3. Copy run_smart_windows.local.example.bat to run_smart_windows.local.bat
-echo     4. Set credentials and Telegram values in the local copy
-echo     5. Double-click run_smart_windows.bat to start
+echo     1. Double-click setup_smart_windows.bat and answer its questions
+echo     2. Confirm smart-monitor.json layout and classifier model path
+echo     3. Double-click run_smart_windows.bat to start
 echo.
 echo NOTE: For GPU acceleration (recommended), install PyTorch with CUDA support:
 echo   https://pytorch.org/get-started/locally/

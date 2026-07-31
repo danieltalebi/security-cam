@@ -1,17 +1,13 @@
 @echo off
 setlocal
 
-if not exist run_smart_windows.local.bat (
-    echo run_smart_windows.local.bat was not found.
-    echo Copy run_smart_windows.local.example.bat to run_smart_windows.local.bat,
-    echo then edit the copy with your camera and Telegram values.
-    pause
-    exit /b 1
-)
-call run_smart_windows.local.bat
+REM Optional local override. Most users should run setup_smart_windows.bat once
+REM instead; it stores secrets as Windows user environment variables.
+if exist run_smart_windows.local.bat call run_smart_windows.local.bat
 
 if "%CAMERA_GARAGE_RTSP_URL%"=="" (
-    echo CAMERA_GARAGE_RTSP_URL is not set in run_smart_windows.local.bat.
+    echo Camera settings are not configured.
+    echo Run setup_smart_windows.bat first, then open a new terminal window.
     pause
     exit /b 1
 )

@@ -21,6 +21,36 @@ from public_area import PublicAreaClassifier
 from telegram_notify import TelegramNotifier
 
 
+def load_windows_user_environment() -> None:
+    """Refresh secrets saved by the Windows setup assistant.
+
+    `setx` affects future processes only. Reading the user environment from the
+    registry prevents a launcher started by an older Explorer/terminal process
+    from inheriting stale Telegram or camera values.
+    """
+    if os.name != "nt":
+        return
+    import winreg
+
+    names = (
+        "CAMERA_GARAGE_RTSP_URL", "CAMERA_GARAGE_ONVIF_USER", "CAMERA_GARAGE_ONVIF_PASSWORD",
+        "CAMERA_DVRIP_USER", "CAMERA_DVRIP_PASSWORD", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
+    )
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+            for name in names:
+                try:
+                    value, _ = winreg.QueryValueEx(key, name)
+                except FileNotFoundError:
+                    continue
+                if value:
+                    os.environ[name] = str(value)
+    except OSError:
+        # Environment variables supplied by the launcher still work when the
+        # registry cannot be read (for example, a restricted service account).
+        pass
+
+
 def require_env(name: str) -> str:
     value = os.environ.get(name)
     if not value:
@@ -185,8 +215,13 @@ class SmartAlarm:
 def main():
     parser = ArgumentParser(description="Send classified Telegram images for DVRIP human alarms.")
     parser.add_argument("--config", default="smart-monitor.json")
-    parser.add_argument("--stream", default=os.environ.get("CAMERA_GARAGE_RTSP_URL"))
+    parser.add_argument("--stream", default=None)
     args = parser.parse_args()
+    load_windows_user_environment()
+    # The value may have been restored from the registry after argparse read
+    # its default, so use the refreshed environment when --stream was omitted.
+    if args.stream is None:
+        args.stream = os.environ.get("CAMERA_GARAGE_RTSP_URL")
     if not args.stream:
         parser.error("provide --stream or set CAMERA_GARAGE_RTSP_URL")
     with open(args.config, encoding="utf-8") as source:

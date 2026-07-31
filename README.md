@@ -50,10 +50,18 @@ For the basic RTSP recorder, open `run_windows.bat` in a text editor, set `STREA
 
 The dual-lens property classifier uses a separate launcher so it can wait for the camera's own DVRIP person event, take an immediate JPEG snapshot, classify the person as `private`, `public`, or `uncertain`, and only use RTSP as a fallback for uncertain results.
 
-1. Copy `smart-monitor.example.json` to `smart-monitor.json`.
-2. Edit the copy: replace `CAMERA_IP`, set the combined-stream layout and the `snapshot.url` for the camera. Do not put passwords in this file.
-3. Copy `run_smart_windows.local.example.bat` to `run_smart_windows.local.bat`, then set the camera, Telegram bot, and chat values in the local copy. Keep the quotation marks: Windows batch files need them to preserve `&` in an RTSP URL. The local file is ignored by Git.
-4. Double-click `run_smart_windows.bat`.
+1. Double-click `setup_smart_windows.bat` and answer the prompts for the IP address, RTSP URL, camera credentials, Telegram bot token, chat ID, and trained property-classifier model path. It stores secrets as Windows **user environment variables** and writes only non-secret settings to the ignored `smart-monitor.json`.
+2. Open `smart-monitor.json` and confirm the combined-stream layout, zone polygons, and snapshot URL match the camera. Do not put passwords in this file.
+3. Ensure the trained model file exists at the selected path, for example `models\\public-area\\model.pt`.
+4. Close the setup window, then double-click `run_smart_windows.bat`.
+
+The assistant uses Windows user environment variables because they are simple, work with the monitor directly, and avoid storing secrets in the repository. They are not encrypted. For a shared Windows computer or stricter secret protection, use a dedicated Windows account and restrict access; a future enhancement can use Windows Credential Manager.
+
+If the console reports `DVRIP login failed: 203`, its DVRIP variables do not match the camera credentials. In a Windows Command Prompt, copy the known-good camera credentials into the DVRIP variables, then close and reopen the terminal:
+
+```bat
+setx CAMERA_DVRIP_USER "%CAMERA_GARAGE_ONVIF_USER%" && setx CAMERA_DVRIP_PASSWORD "%CAMERA_GARAGE_ONVIF_PASSWORD%"
+```
 
 It sends Telegram notifications only for confirmed `private` detections. Every annotated result is saved locally under `events\\review\\private`, `events\\review\\public`, or `events\\review\\uncertain` for later review. Press `Ctrl+C` in its terminal window to stop it.
 
