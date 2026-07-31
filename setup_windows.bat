@@ -57,10 +57,17 @@ echo  Setup complete!
 echo ============================================
 echo.
 echo Next steps:
-echo   1. Open run_windows.bat in a text editor
-echo   2. Set your STREAM_URL to your camera's RTSP address
-echo   3. Adjust YOLO_OBJECTS and other options as needed
-echo   4. Double-click run_windows.bat to start
+echo   Basic RTSP recording:
+echo     1. Open run_windows.bat in a text editor
+echo     2. Set STREAM_URL and other options
+echo     3. Double-click run_windows.bat to start
+echo.
+echo   Smart DVRIP + Telegram monitoring:
+echo     1. Copy smart-monitor.example.json to smart-monitor.json
+echo     2. Adjust the layout, snapshot URL and camera endpoint in smart-monitor.json
+echo     3. Copy run_smart_windows.local.example.bat to run_smart_windows.local.bat
+echo     4. Set credentials and Telegram values in the local copy
+echo     5. Double-click run_smart_windows.bat to start
 echo.
 echo NOTE: For GPU acceleration (recommended), install PyTorch with CUDA support:
 echo   https://pytorch.org/get-started/locally/

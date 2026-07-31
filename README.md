@@ -44,7 +44,18 @@ cd yolo-rtsp-security-cam
 setup_windows.bat
 ```
 
-Then open `run_windows.bat` in a text editor, set your `STREAM_URL` and other options, and double-click it to start the app. Close the terminal window to stop it.
+For the basic RTSP recorder, open `run_windows.bat` in a text editor, set `STREAM_URL` and other options, then double-click it to start the app.
+
+#### Windows smart DVRIP + Telegram monitor
+
+The dual-lens property classifier uses a separate launcher so it can wait for the camera's own DVRIP person event, take an immediate JPEG snapshot, classify the person as `private`, `public`, or `uncertain`, and only use RTSP as a fallback for uncertain results.
+
+1. Copy `smart-monitor.example.json` to `smart-monitor.json`.
+2. Edit the copy: replace `CAMERA_IP`, set the combined-stream layout and the `snapshot.url` for the camera. Do not put passwords in this file.
+3. Copy `run_smart_windows.local.example.bat` to `run_smart_windows.local.bat`, then set the camera, Telegram bot, and chat values in the local copy. Keep the quotation marks: Windows batch files need them to preserve `&` in an RTSP URL. The local file is ignored by Git.
+4. Double-click `run_smart_windows.bat`.
+
+It sends Telegram notifications only for confirmed `private` detections. Every annotated result is saved locally under `events\\review\\private`, `events\\review\\public`, or `events\\review\\uncertain` for later review. Press `Ctrl+C` in its terminal window to stop it.
 
 ## Running the App
 

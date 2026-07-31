@@ -6,6 +6,7 @@ events/
 dataset/
 models/
 smart-monitor.json
+run_smart_windows.local.bat
 snapshot-*.jpg
 yolov8n.pt
 [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/
