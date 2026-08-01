@@ -29,3 +29,14 @@ class TelegramNotifier:
             result = json.loads(response.read().decode("utf-8"))
         if not result.get("ok"):
             raise RuntimeError("Telegram did not accept the photo.")
+
+    def send_message(self, text: str) -> None:
+        payload = json.dumps({"chat_id": self.chat_id, "text": text}).encode("utf-8")
+        request = Request(
+            f"https://api.telegram.org/bot{self.token}/sendMessage", data=payload, method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urlopen(request, timeout=15) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        if not result.get("ok"):
+            raise RuntimeError("Telegram did not accept the test message.")
