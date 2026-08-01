@@ -1,0 +1,14 @@
+{
+  "cameras": [
+    {
+      "name": "garage",
+      "mode": "property",
+      "config": "smart-monitor.json"
+    },
+    {
+      "name": "backyard",
+      "mode": "presence",
+      "config": "backyard-monitor.json"
+    }
+  ]
+}

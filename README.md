@@ -65,6 +65,8 @@ setx CAMERA_DVRIP_USER "%CAMERA_GARAGE_ONVIF_USER%" && setx CAMERA_DVRIP_PASSWOR
 
 It sends Telegram notifications only for confirmed `private` detections. Every annotated result is saved locally under `events\\review\\private`, `events\\review\\public`, or `events\\review\\uncertain` for later review. Press `Ctrl+C` in its terminal window to stop it.
 
+For two or more cameras, copy `multi-camera.example.json` to `multi-camera.json`, configure each camera file, then use `run_multi_windows.bat`. Run `diagnose_cameras_windows.bat` first to check every DVRIP connection and JPEG snapshot; add `--telegram` after it in a Command Prompt if you also want Telegram test messages.
+
 ## Running the App
 
 The only arguments required to run the app are --stream followed by the RTSP address of your video stream, and --yolo followed by a comma separated list of objects you'd like the app to detect. The list of valid objects can be found in the coco.names file.
@@ -210,6 +212,24 @@ python3 -u dvrip_listen.py --config smart-monitor.json --duration 120
 Trigger the camera's human detection during that time and retain the printed `ALARM` JSON. Different OEM firmware versions use different event payload fields, so this one-time check confirms how this specific camera identifies a human alarm before it is used to activate RTSP analysis.
 
 When `dvrip.listen_events` and `public_area_classifier.enabled` are enabled in `smart-monitor.json`, the main monitor uses the confirmed DVRIP human `Start` event to open a short RTSP analysis window. By default it keeps a single RTSP decoder warm (`dvrip.keep_rtsp_warm: true`), so the event is analysed using current frames immediately rather than waiting for an RTSP reconnection. This does not run YOLO while there is no event. A person in the fixed top lens alerts immediately. For the PTZ lens, a high-confidence public-area prediction suppresses the alert, a low probability alerts immediately, and intermediate values require the configured dwell time. The monitor shows public pixels in orange.
+
+### Multiple cameras and diagnostics
+
+Use one configuration file per physical camera, then list them in `multi-camera.json` (start from `multi-camera.example.json`). The `property` mode runs the Garage public/private classifier; the `presence` mode is for areas such as a back yard where any human detection is already a positive event. It captures a JPEG, saves it, and sends it to Telegram without opening RTSP.
+
+```bash
+python3 multi_camera_monitor.py --config multi-camera.json
+```
+
+Copy `backyard-monitor.example.json` to `backyard-monitor.json`, replace the camera IP placeholders, and set the uniquely named environment variables it references. Keeping distinct variable names for each camera prevents one camera's credentials from being used accidentally for another.
+
+To test every configured camera without waiting for an event:
+
+```bash
+python3 diagnose_cameras.py --config multi-camera.json
+```
+
+Add `--telegram` to send a Telegram test message for each configured camera. The diagnostic checks DVRIP login and a JPEG snapshot; it never changes camera configuration.
 
 Check out my video about this app on my YouTube channel for more details: https://youtu.be/m8dIJN6ePKA
 
