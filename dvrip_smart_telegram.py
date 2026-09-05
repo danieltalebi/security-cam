@@ -61,7 +61,7 @@ class SmartAlarm:
         self.height = max(bounds[3] for bounds in self.layout.values())
         self.username, self.password = credentials(config)
         telegram = config["telegram"]
-        self.telegram = TelegramNotifier(require_env(telegram["token_env"]), require_env(telegram["chat_id_env"]))
+        self.telegram = TelegramNotifier(required_env(telegram["token_env"]), required_env(telegram["chat_id_env"])).start_command_listener()
         self.snapshot_url = config["snapshot"]["url"]
         self.snapshot_query_auth = bool(config["snapshot"].get("xmeye_query_auth", False))
         policy = config["public_area_classifier"]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 import time
 from argparse import ArgumentParser
@@ -36,7 +37,7 @@ class PresenceAlarm:
         self.query_auth = bool(snapshot.get("xmeye_query_auth", False))
         self.review_dir = Path(snapshot.get("review_dir", f"events/review/{name}"))
         telegram = config["telegram"]
-        self.notifier = TelegramNotifier(required_env(telegram["token_env"]), required_env(telegram["chat_id_env"]))
+        self.notifier = TelegramNotifier(required_env(telegram["token_env"]), required_env(telegram["chat_id_env"])).start_command_listener()
         self.cooldown = float(config["dvrip"].get("notification_cooldown_seconds", 40))
         self.last_notification = float("-inf")
         self.lock = threading.Lock()
@@ -63,8 +64,8 @@ class PresenceAlarm:
                     print(f"{self.name}: Telegram notification suppressed ({remaining:.1f}s cooldown remaining)")
                     return
                 self.last_notification = time.monotonic()
-            self.notifier.send_photo(data, f"{self.name} camera · human detected")
-            print(f"{self.name}: human event saved and sent")
+            sent = self.notifier.send_photo(data, f"{self.name} camera · human detected")
+            print(f"{self.name}: human event saved" + (" and sent" if sent else " (Telegram muted)"))
         except Exception as error:
             print(f"{self.name}: snapshot notification failed: {type(error).__name__}: {error}")
 
