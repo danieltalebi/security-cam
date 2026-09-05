@@ -17,7 +17,7 @@ from ultralytics import YOLO
 from dvrip_events import DVRIPAlarmListener
 from onvif_snapshot import download_snapshot, xmeye_snapshot_uri
 from public_area import PublicAreaClassifier
-from telegram_notify import TelegramNotifier
+from telegram_notify import CameraConnectivityAlerts, TelegramNotifier
 from camera_config import credentials, dvrip_endpoint, required_env, rtsp_url
 from camera_config import camera_name
 
@@ -220,9 +220,13 @@ def main():
     if not args.stream:
         parser.error("provide --stream or set this camera's CAMERA_<NAME>_RTSP_URL")
     worker = SmartAlarm(config, args.stream)
+    connectivity = CameraConnectivityAlerts(worker.name, worker.telegram)
     host, port = dvrip_endpoint(config)
     user, password = credentials(config)
-    listener = DVRIPAlarmListener(host, port, user, password, worker.handle_event, lambda text: print("DVRIP " + text))
+    listener = DVRIPAlarmListener(
+        host, port, user, password, worker.handle_event,
+        lambda text: print("DVRIP " + text), on_connectivity=connectivity.set_online,
+    )
     listener.start()
     print("Listening for DVRIP person events. Press Ctrl+C to stop.")
     try:
@@ -230,6 +234,7 @@ def main():
             time.sleep(1)
     except KeyboardInterrupt:
         listener.stop()
+        connectivity.stop()
 
 
 if __name__ == "__main__":

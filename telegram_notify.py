@@ -127,6 +127,15 @@ class TelegramNotifier:
         if not result.get("ok"):
             raise RuntimeError("Telegram did not accept the message.")
 
+    def send_notification_message(self, text: str) -> bool:
+        """Send an alert text unless notifications are currently muted."""
+        muted, remaining = self.is_muted()
+        if muted:
+            print(f"Telegram notification muted ({format_duration(remaining)} remaining)")
+            return False
+        self.send_message(text)
+        return True
+
     def _get_updates(self, timeout: int, offset: int | None = None) -> list[dict]:
         payload: dict[str, object] = {"timeout": timeout, "allowed_updates": ["message"]}
         if offset is not None:
@@ -196,3 +205,82 @@ class TelegramNotifier:
                 controller._listener_started = True
                 threading.Thread(target=controller._listen, name="telegram-commands", daemon=True).start()
         return controller
+
+
+class CameraConnectivityAlerts:
+    """Send escalating offline alerts and one recovery alert per outage."""
+
+    def __init__(
+        self, camera_name: str, notifier: TelegramNotifier,
+        thresholds: tuple[float, ...] = (300, 1800, 3600),
+        check_seconds: float = 5.0, start_thread: bool = True,
+    ):
+        self.camera_name = camera_name
+        self.notifier = notifier
+        self.thresholds = thresholds
+        self.check_seconds = check_seconds
+        self._online: bool | None = None
+        self._offline_since: float | None = None
+        self._alerts_sent = 0
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        if start_thread:
+            self._thread = threading.Thread(
+                target=self._run, name=f"connectivity-{camera_name}", daemon=True,
+            )
+            self._thread.start()
+
+    def _send(self, text: str) -> bool:
+        try:
+            return self.notifier.send_notification_message(text)
+        except Exception as error:
+            print(f"{self.camera_name}: Telegram connectivity alert failed: {type(error).__name__}: {error}")
+            return False
+
+    def set_online(self, online: bool) -> None:
+        recovery_seconds = None
+        should_report_recovery = False
+        with self._lock:
+            if online:
+                if self._online is False and self._offline_since is not None:
+                    recovery_seconds = time.time() - self._offline_since
+                    should_report_recovery = self._alerts_sent > 0
+                self._online = True
+                self._offline_since = None
+                self._alerts_sent = 0
+            else:
+                if self._online is not False:
+                    self._offline_since = time.time()
+                    self._alerts_sent = 0
+                self._online = False
+        if should_report_recovery and recovery_seconds is not None:
+            self._send(
+                f"✅ {self.camera_name} camera is back online after "
+                f"{format_duration(recovery_seconds)} offline."
+            )
+
+    def check(self, now: float | None = None) -> None:
+        messages = []
+        now = time.time() if now is None else now
+        with self._lock:
+            if self._online is not False or self._offline_since is None:
+                return
+            elapsed = now - self._offline_since
+            while self._alerts_sent < len(self.thresholds) and elapsed >= self.thresholds[self._alerts_sent]:
+                threshold = self.thresholds[self._alerts_sent]
+                self._alerts_sent += 1
+                messages.append(
+                    f"⚠️ {self.camera_name} camera has been offline for {format_duration(threshold)}."
+                )
+        for message in messages:
+            self._send(message)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self.check_seconds):
+            self.check()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=self.check_seconds + 1)

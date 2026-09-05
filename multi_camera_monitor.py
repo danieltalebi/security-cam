@@ -16,7 +16,7 @@ import numpy as np
 from dvrip_events import DVRIPAlarmListener
 from dvrip_smart_telegram import SmartAlarm, load_windows_user_environment
 from onvif_snapshot import download_snapshot, xmeye_snapshot_uri
-from telegram_notify import TelegramNotifier
+from telegram_notify import CameraConnectivityAlerts, TelegramNotifier
 from camera_config import camera_name, credentials, dvrip_endpoint, required_env, rtsp_url
 
 
@@ -83,6 +83,7 @@ def main() -> None:
     multi_path = Path(args.config).resolve()
     multi = load_config(multi_path)
     listeners: list[DVRIPAlarmListener] = []
+    connectivity_alerts: list[CameraConnectivityAlerts] = []
 
     for entry in multi.get("cameras", []):
         name = entry.get("name")
@@ -95,14 +96,22 @@ def main() -> None:
             stream = os.environ.get(entry["stream_env"]) if entry.get("stream_env") else rtsp_url(config, name)
             if not stream:
                 raise RuntimeError(f"{name}: its CAMERA_<NAME>_RTSP_URL environment variable is not set.")
-            handler = SmartAlarm(config, stream).handle_event
+            alarm = SmartAlarm(config, stream)
+            handler, notifier = alarm.handle_event, alarm.telegram
         elif mode == "presence":
-            handler = PresenceAlarm(name, config).handle_event
+            alarm = PresenceAlarm(name, config)
+            handler, notifier = alarm.handle_event, alarm.notifier
         else:
             raise RuntimeError(f"{name}: unsupported mode {mode!r}.")
-        listener = DVRIPAlarmListener(host, port, user, password, handler, lambda message, camera=name: print(f"{camera}: DVRIP {message}"))
+        connectivity = CameraConnectivityAlerts(name, notifier)
+        listener = DVRIPAlarmListener(
+            host, port, user, password, handler,
+            lambda message, camera=name: print(f"{camera}: DVRIP {message}"),
+            on_connectivity=connectivity.set_online,
+        )
         listener.start()
         listeners.append(listener)
+        connectivity_alerts.append(connectivity)
         print(f"{name}: listener started ({mode})")
 
     if not listeners:
@@ -114,6 +123,8 @@ def main() -> None:
     except KeyboardInterrupt:
         for listener in listeners:
             listener.stop()
+        for connectivity in connectivity_alerts:
+            connectivity.stop()
 
 
 if __name__ == "__main__":

@@ -108,10 +108,12 @@ class DVRIPAlarmListener:
         self, host: str, port: int, username: str, password: str,
         on_event: Callable[[dict], None], on_status: Callable[[str], None] | None = None,
         reconnect_seconds: float = 3.0,
+        on_connectivity: Callable[[bool], None] | None = None,
     ):
         self.host, self.port = host, port
         self.username, self.password = username, password
         self.on_event, self.on_status = on_event, on_status or (lambda _message: None)
+        self.on_connectivity = on_connectivity or (lambda _online: None)
         self.reconnect_seconds = reconnect_seconds
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -140,6 +142,7 @@ class DVRIPAlarmListener:
                     self.on_status("DVRIP alarm subscription was not confirmed; listening anyway.")
                 else:
                     self.on_status("DVRIP alarm listener connected.")
+                self.on_connectivity(True)
                 if connection.socket:
                     connection.socket.settimeout(1.0)
                 last_keepalive = time.monotonic()
@@ -165,6 +168,7 @@ class DVRIPAlarmListener:
                     else:
                         self.on_status(f"DVRIP message {command} received while listening.")
             except (OSError, ConnectionError, PermissionError, struct.error) as error:
+                self.on_connectivity(False)
                 self.on_status(f"DVRIP listener reconnecting: {type(error).__name__}: {error}")
             finally:
                 connection.close()

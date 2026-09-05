@@ -63,6 +63,8 @@ It sends Telegram notifications only for confirmed `private` detections. Every a
 
 To pause Telegram alerts, send the bot a duration such as `10m`, `1h`, or `1h30m`. Send `status` to see the remaining pause or `resume` to enable alerts immediately. Only messages from the configured Telegram chat are accepted. Detection and local event saving continue while alerts are paused, and the pause survives monitor restarts.
 
+Camera connectivity is monitored through the DVRIP event connection. If a camera remains offline, Telegram sends alerts after 5, 30, and 60 minutes. Once an outage has produced an alert, another message is sent when that camera reconnects. Each outage produces at most those three offline alerts.
+
 To add another camera later, run `setup_camera_windows.bat` again. Run `diagnose_cameras_windows.bat` first to check every DVRIP connection and JPEG snapshot; add `--telegram` after it in a Command Prompt if you also want Telegram test messages.
 
 ## Running the App
