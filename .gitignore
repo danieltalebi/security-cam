@@ -8,6 +8,7 @@ models/
 smart-monitor.json
 backyard-monitor.json
 multi-camera.json
+*-monitor.json
 run_smart_windows.local.bat
 snapshot-*.jpg
 yolov8n.pt

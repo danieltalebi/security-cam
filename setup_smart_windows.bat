@@ -7,5 +7,6 @@ if not exist venv\Scripts\python.exe (
     exit /b 1
 )
 
-venv\Scripts\python.exe configure_smart_monitor.py
+echo This now uses the named-camera setup. It can add Garage or any future camera.
+venv\Scripts\python.exe configure_camera.py
 pause

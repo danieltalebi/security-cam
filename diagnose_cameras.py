@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from argparse import ArgumentParser
 from pathlib import Path
 
@@ -12,6 +11,7 @@ from dvrip_smart_telegram import load_windows_user_environment
 from multi_camera_monitor import camera_credentials
 from onvif_snapshot import download_snapshot, xmeye_snapshot_uri
 from telegram_notify import TelegramNotifier
+from camera_config import credentials
 
 
 def load(path: Path) -> dict:
@@ -35,9 +35,7 @@ def check_camera(name: str, config: dict, send_telegram: bool) -> bool:
         ok = False
 
     try:
-        onvif = config["onvif"]
-        user = os.environ[onvif.get("username_env", "CAMERA_ONVIF_USER")]
-        password = os.environ[onvif.get("password_env", "CAMERA_ONVIF_PASSWORD")]
+        user, password = credentials(config, name)
         snapshot = config["snapshot"]
         uri = snapshot["url"]
         if snapshot.get("xmeye_query_auth", False):

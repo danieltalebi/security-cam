@@ -50,22 +50,18 @@ For the basic RTSP recorder, open `run_windows.bat` in a text editor, set `STREA
 
 The dual-lens property classifier uses a separate launcher so it can wait for the camera's own DVRIP person event, take an immediate JPEG snapshot, classify the person as `private`, `public`, or `uncertain`, and only use RTSP as a fallback for uncertain results.
 
-1. Double-click `setup_smart_windows.bat` and answer the prompts for the IP address, RTSP URL, camera credentials, Telegram bot token, chat ID, and trained property-classifier model path. It stores secrets as Windows **user environment variables** and writes only non-secret settings to the ignored `smart-monitor.json`.
-2. Open `smart-monitor.json` and confirm the combined-stream layout, zone polygons, and snapshot URL match the camera. Do not put passwords in this file.
-3. Ensure the trained model file exists at the selected path, for example `models\\public-area\\model.pt`.
-4. Close the setup window, then double-click `run_smart_windows.bat`.
+1. Double-click `setup_camera_windows.bat` and give the camera a name, such as `garage` or `back patio`. Choose `property` for the dual-lens public/private classifier, or `presence` when any detected person should alert.
+2. The setup creates one non-secret JSON file per camera and adds it to the ignored `multi-camera.json`. It stores its credentials as Windows user variables derived from the name: `CAMERA_GARAGE_USER`, `CAMERA_GARAGE_PASSWORD`, and, for a property camera, `CAMERA_GARAGE_RTSP_URL`.
+3. Open the property camera JSON only to calibrate its layout, zones, and classifier model path. Do not put passwords in it.
+4. Close the setup window, open a new Command Prompt, then double-click `run_multi_windows.bat`.
 
 The assistant uses Windows user environment variables because they are simple, work with the monitor directly, and avoid storing secrets in the repository. They are not encrypted. For a shared Windows computer or stricter secret protection, use a dedicated Windows account and restrict access; a future enhancement can use Windows Credential Manager.
 
-If the console reports `DVRIP login failed: 203`, its DVRIP variables do not match the camera credentials. In a Windows Command Prompt, copy the known-good camera credentials into the DVRIP variables, then close and reopen the terminal:
-
-```bat
-setx CAMERA_DVRIP_USER "%CAMERA_GARAGE_ONVIF_USER%" && setx CAMERA_DVRIP_PASSWORD "%CAMERA_GARAGE_ONVIF_PASSWORD%"
-```
+The same `CAMERA_<NAME>_USER` and `CAMERA_<NAME>_PASSWORD` are used for both DVRIP and ONVIF. There are no separate DVRIP credential variables to keep in sync.
 
 It sends Telegram notifications only for confirmed `private` detections. Every annotated result is saved locally under `events\\review\\private`, `events\\review\\public`, or `events\\review\\uncertain` for later review. Press `Ctrl+C` in its terminal window to stop it.
 
-For two or more cameras, copy `multi-camera.example.json` to `multi-camera.json`, configure each camera file, then use `run_multi_windows.bat`. Run `diagnose_cameras_windows.bat` first to check every DVRIP connection and JPEG snapshot; add `--telegram` after it in a Command Prompt if you also want Telegram test messages.
+To add another camera later, run `setup_camera_windows.bat` again. Run `diagnose_cameras_windows.bat` first to check every DVRIP connection and JPEG snapshot; add `--telegram` after it in a Command Prompt if you also want Telegram test messages.
 
 ## Running the App
 
@@ -215,13 +211,13 @@ When `dvrip.listen_events` and `public_area_classifier.enabled` are enabled in `
 
 ### Multiple cameras and diagnostics
 
-Use one configuration file per physical camera, then list them in `multi-camera.json` (start from `multi-camera.example.json`). The `property` mode runs the Garage public/private classifier; the `presence` mode is for areas such as a back yard where any human detection is already a positive event. It captures a JPEG, saves it, and sends it to Telegram without opening RTSP.
+Use one configuration file per physical camera, then list them in `multi-camera.json` (start from `multi-camera.example.json`). Every camera has a name and a matching environment prefix: `garage` uses `CAMERA_GARAGE_USER` and `CAMERA_GARAGE_PASSWORD`; `back patio` uses `CAMERA_BACK_PATIO_USER` and `CAMERA_BACK_PATIO_PASSWORD`. Both DVRIP and ONVIF share those credentials. A `property` camera additionally uses `CAMERA_<NAME>_RTSP_URL`.
 
 ```bash
 python3 multi_camera_monitor.py --config multi-camera.json
 ```
 
-Copy `backyard-monitor.example.json` to `backyard-monitor.json`, replace the camera IP placeholders, and set the uniquely named environment variables it references. Keeping distinct variable names for each camera prevents one camera's credentials from being used accidentally for another.
+The `property` mode runs the public/private classifier; `presence` is for areas such as a back yard where any human detection is positive. It captures a JPEG, saves it, and sends it to Telegram without opening RTSP. On Windows, `setup_camera_windows.bat` creates and registers either mode interactively.
 
 To test every configured camera without waiting for an event:
 

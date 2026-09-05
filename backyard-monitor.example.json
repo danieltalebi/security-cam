@@ -1,14 +1,14 @@
 {
+  "camera": {
+    "name": "backyard",
+    "credential_prefix": "CAMERA_BACKYARD"
+  },
   "onvif": {
-    "device_service": "http://BACKYARD_CAMERA_IP:8899/onvif/device_service",
-    "username_env": "CAMERA_BACKYARD_ONVIF_USER",
-    "password_env": "CAMERA_BACKYARD_ONVIF_PASSWORD"
+    "device_service": "http://BACKYARD_CAMERA_IP:8899/onvif/device_service"
   },
   "dvrip": {
     "host": "BACKYARD_CAMERA_IP",
     "port": 34567,
-    "username_env": "CAMERA_BACKYARD_DVRIP_USER",
-    "password_env": "CAMERA_BACKYARD_DVRIP_PASSWORD",
     "notification_cooldown_seconds": 40
   },
   "snapshot": {

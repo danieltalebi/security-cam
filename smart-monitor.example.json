@@ -1,4 +1,9 @@
 {
+  "camera": {
+    "name": "garage",
+    "credential_prefix": "CAMERA_GARAGE",
+    "rtsp_env": "CAMERA_GARAGE_RTSP_URL"
+  },
   "layout": {
     "fixed": [0, 0, 3072, 1024],
     "ptz": [0, 1024, 3072, 2048]
@@ -39,15 +44,11 @@
   "onvif": {
     "enabled": false,
     "device_service": "http://CAMERA_IP:8899/onvif/device_service",
-    "username_env": "CAMERA_ONVIF_USER",
-    "password_env": "CAMERA_ONVIF_PASSWORD",
     "profile_name": "mainStream",
     "poll_seconds": 1
   },
   "dvrip": {
     "port": 34567,
-    "username_env": "CAMERA_DVRIP_USER",
-    "password_env": "CAMERA_DVRIP_PASSWORD",
     "listen_events": false,
     "analysis_seconds": 10,
     "keep_rtsp_warm": true,

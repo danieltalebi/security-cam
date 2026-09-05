@@ -9,7 +9,6 @@ import threading
 import time
 from argparse import ArgumentParser
 from datetime import datetime
-from urllib.parse import urlparse
 
 import cv2
 import numpy as np
@@ -19,6 +18,8 @@ from dvrip_events import DVRIPAlarmListener
 from onvif_snapshot import download_snapshot, xmeye_snapshot_uri
 from public_area import PublicAreaClassifier
 from telegram_notify import TelegramNotifier
+from camera_config import credentials, dvrip_endpoint, required_env, rtsp_url
+from camera_config import camera_name
 
 
 def load_windows_user_environment() -> None:
@@ -32,18 +33,18 @@ def load_windows_user_environment() -> None:
         return
     import winreg
 
-    names = (
-        "CAMERA_GARAGE_RTSP_URL", "CAMERA_GARAGE_ONVIF_USER", "CAMERA_GARAGE_ONVIF_PASSWORD",
-        "CAMERA_DVRIP_USER", "CAMERA_DVRIP_PASSWORD", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
-    )
     try:
         with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
-            for name in names:
+            index = 0
+            while True:
                 try:
-                    value, _ = winreg.QueryValueEx(key, name)
+                    name, value, _ = winreg.EnumValue(key, index)
                 except FileNotFoundError:
-                    continue
-                if value:
+                    break
+                except OSError:
+                    break
+                index += 1
+                if value and (name.startswith("CAMERA_") or name in {"TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"}):
                     os.environ[name] = str(value)
     except OSError:
         # Environment variables supplied by the launcher still work when the
@@ -51,22 +52,14 @@ def load_windows_user_environment() -> None:
         pass
 
 
-def require_env(name: str) -> str:
-    value = os.environ.get(name)
-    if not value:
-        raise RuntimeError(f"Set {name} before running this script.")
-    return value
-
-
 class SmartAlarm:
     def __init__(self, config: dict, stream: str):
         self.config, self.stream = config, stream
+        self.name = camera_name(config)
         self.layout = config["layout"]
         self.width = max(bounds[2] for bounds in self.layout.values())
         self.height = max(bounds[3] for bounds in self.layout.values())
-        onvif = config["onvif"]
-        self.username = require_env(onvif.get("username_env", "CAMERA_GARAGE_ONVIF_USER"))
-        self.password = require_env(onvif.get("password_env", "CAMERA_GARAGE_ONVIF_PASSWORD"))
+        self.username, self.password = credentials(config)
         telegram = config["telegram"]
         self.telegram = TelegramNotifier(require_env(telegram["token_env"]), require_env(telegram["chat_id_env"]))
         self.snapshot_url = config["snapshot"]["url"]
@@ -139,7 +132,7 @@ class SmartAlarm:
                 print(f"Telegram private notification suppressed ({remaining:.1f}s cooldown remaining)")
                 return
             self.last_private_notification_at = now
-        self.telegram.send_photo(self.jpeg(frame), f"Garage camera · {source} · private · persons={count}")
+        self.telegram.send_photo(self.jpeg(frame), f"{self.name} camera · {source} · private · persons={count}")
 
     def fetch_snapshot(self) -> np.ndarray:
         uri = xmeye_snapshot_uri(self.snapshot_url, self.username, self.password) if self.snapshot_query_auth else self.snapshot_url
@@ -218,20 +211,18 @@ def main():
     parser.add_argument("--stream", default=None)
     args = parser.parse_args()
     load_windows_user_environment()
+    with open(args.config, encoding="utf-8") as source:
+        config = json.load(source)
     # The value may have been restored from the registry after argparse read
     # its default, so use the refreshed environment when --stream was omitted.
     if args.stream is None:
-        args.stream = os.environ.get("CAMERA_GARAGE_RTSP_URL")
+        args.stream = rtsp_url(config)
     if not args.stream:
-        parser.error("provide --stream or set CAMERA_GARAGE_RTSP_URL")
-    with open(args.config, encoding="utf-8") as source:
-        config = json.load(source)
+        parser.error("provide --stream or set this camera's CAMERA_<NAME>_RTSP_URL")
     worker = SmartAlarm(config, args.stream)
-    endpoint = urlparse(config["onvif"]["device_service"])
-    dvrip = config["dvrip"]
-    user = os.environ.get(dvrip.get("username_env", "CAMERA_DVRIP_USER")) or worker.username
-    password = os.environ.get(dvrip.get("password_env", "CAMERA_DVRIP_PASSWORD")) or worker.password
-    listener = DVRIPAlarmListener(endpoint.hostname, int(dvrip.get("port", 34567)), user, password, worker.handle_event, lambda text: print("DVRIP " + text))
+    host, port = dvrip_endpoint(config)
+    user, password = credentials(config)
+    listener = DVRIPAlarmListener(host, port, user, password, worker.handle_event, lambda text: print("DVRIP " + text))
     listener.start()
     print("Listening for DVRIP person events. Press Ctrl+C to stop.")
     try:

@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
-import re
 import threading
 import time
 from argparse import ArgumentParser
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlparse
 
 import cv2
 import numpy as np
@@ -19,27 +16,13 @@ from dvrip_events import DVRIPAlarmListener
 from dvrip_smart_telegram import SmartAlarm, load_windows_user_environment
 from onvif_snapshot import download_snapshot, xmeye_snapshot_uri
 from telegram_notify import TelegramNotifier
-
-
-def required_env(name: str) -> str:
-    value = os.environ.get(name)
-    if not value:
-        raise RuntimeError(f"{name} is not set.")
-    return value
+from camera_config import camera_name, credentials, dvrip_endpoint, required_env, rtsp_url
 
 
 def camera_credentials(config: dict) -> tuple[str, int, str, str]:
-    onvif = config["onvif"]
-    dvrip = config["dvrip"]
-    endpoint = urlparse(onvif["device_service"])
-    host = dvrip.get("host", endpoint.hostname)
-    if not host:
-        raise RuntimeError("Camera host is missing.")
-    onvif_user = required_env(onvif.get("username_env", "CAMERA_ONVIF_USER"))
-    onvif_password = required_env(onvif.get("password_env", "CAMERA_ONVIF_PASSWORD"))
-    user = os.environ.get(dvrip.get("username_env", "CAMERA_DVRIP_USER")) or onvif_user
-    password = os.environ.get(dvrip.get("password_env", "CAMERA_DVRIP_PASSWORD")) or onvif_password
-    return host, int(dvrip.get("port", 34567)), user, password
+    host, port = dvrip_endpoint(config)
+    user, password = credentials(config)
+    return host, port, user, password
 
 
 class PresenceAlarm:
@@ -47,9 +30,7 @@ class PresenceAlarm:
 
     def __init__(self, name: str, config: dict):
         self.name, self.config = name, config
-        onvif = config["onvif"]
-        self.user = required_env(onvif.get("username_env", "CAMERA_ONVIF_USER"))
-        self.password = required_env(onvif.get("password_env", "CAMERA_ONVIF_PASSWORD"))
+        self.user, self.password = credentials(config, name)
         snapshot = config["snapshot"]
         self.snapshot_url = snapshot["url"]
         self.query_auth = bool(snapshot.get("xmeye_query_auth", False))
@@ -103,15 +84,16 @@ def main() -> None:
     listeners: list[DVRIPAlarmListener] = []
 
     for entry in multi.get("cameras", []):
-        name = entry["name"]
+        name = entry.get("name")
         mode = entry["mode"]
         config_path = (multi_path.parent / entry["config"]).resolve()
         config = load_config(config_path)
+        name = name or camera_name(config)
         host, port, user, password = camera_credentials(config)
         if mode == "property":
-            stream = os.environ.get(entry.get("stream_env", "CAMERA_GARAGE_RTSP_URL"))
+            stream = os.environ.get(entry["stream_env"]) if entry.get("stream_env") else rtsp_url(config, name)
             if not stream:
-                raise RuntimeError(f"{name}: RTSP environment variable is not set.")
+                raise RuntimeError(f"{name}: its CAMERA_<NAME>_RTSP_URL environment variable is not set.")
             handler = SmartAlarm(config, stream).handle_event
         elif mode == "presence":
             handler = PresenceAlarm(name, config).handle_event

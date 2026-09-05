@@ -21,6 +21,8 @@ from urllib.request import (
     build_opener,
 )
 
+from camera_config import credentials
+
 
 def select_profile(profiles, requested_name: str | None):
     if requested_name:
@@ -77,14 +79,12 @@ def main():
     args = parser.parse_args()
 
     with open(args.config, encoding="utf-8") as source:
-        onvif_config = json.load(source)["onvif"]
+        config = json.load(source)
+    onvif_config = config["onvif"]
     endpoint = urlparse(onvif_config["device_service"])
-    username = os.environ.get(onvif_config.get("username_env", "CAMERA_ONVIF_USER"))
-    password = os.environ.get(onvif_config.get("password_env", "CAMERA_ONVIF_PASSWORD"))
+    username, password = credentials(config)
     if not endpoint.hostname or not endpoint.port:
         raise SystemExit("Invalid ONVIF device_service in the configuration.")
-    if not username or not password:
-        raise SystemExit("Set the ONVIF credential variables named in smart-monitor.json first.")
 
     if args.snapshot_url:
         uri = args.snapshot_url
