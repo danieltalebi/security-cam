@@ -71,8 +71,15 @@ class PresenceAlarm:
 
 
 def load_config(path: Path) -> dict:
-    with path.open(encoding="utf-8") as source:
-        return json.load(source)
+    try:
+        with path.open(encoding="utf-8") as source:
+            return json.load(source)
+    except json.JSONDecodeError as error:
+        raise SystemExit(
+            f"Invalid JSON in {path.resolve()}\n"
+            f"Line {error.lineno}, column {error.colno}: {error.msg}.\n"
+            "Check commas between entries and double quotes around text values."
+        ) from None
 
 
 def main() -> None:
