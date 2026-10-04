@@ -1,11 +1,15 @@
 import unittest
+from unittest.mock import MagicMock
 
 from router_presence import (
     AsusRouterSource,
     HuaweiRouterSource,
     PresenceObservation,
+    RouterClient,
+    RouterPresenceMonitor,
     asus_online_macs,
     combined_presence,
+    huawei_ethernet_clients,
     huawei_online_macs,
     normalize_mac,
 )
@@ -91,6 +95,47 @@ class RouterPresenceTests(unittest.TestCase):
             huawei_online_macs(page),
             {"fa:07:d7:02:b1:bb", "11:22:33:44:55:66"},
         )
+
+    def test_huawei_extracts_active_ipv4_ethernet_clients(self):
+        page = r'''
+        new USERDev("path.1","192\x2e168\x2e100\x2e134",
+          "fc\x3a34\x3a97\x3a60\x3ac7\x3ad0","LAN2","DHCP","",
+          "Online","ETH","1:00","router","0","100"),
+        new USERDev("path.2","192\x2e168\x2e100\x2e203",
+          "aa\x3abb\x3acc\x3add\x3aee\x3aff","LAN2","DHCP","",
+          "Offline","ETH","1:00","phone","0","100"),
+        new USERDev("path.3","192\x2e168\x2e100\x2e50",
+          "11\x3a22\x3a33\x3a44\x3a55\x3a66","SSID1","DHCP","",
+          "Online","WIFI","1:00","phone","0","100")
+        '''
+        self.assertEqual(
+            huawei_ethernet_clients(page),
+            [RouterClient("192.168.100.134", "fc:34:97:60:c7:d0", "LAN2", "router")],
+        )
+
+    def test_unavailable_asus_is_rediscovered_through_huawei(self):
+        monitor = object.__new__(RouterPresenceMonitor)
+        huawei = object.__new__(HuaweiRouterSource)
+        huawei.name = "huawei"
+        huawei.ethernet_clients = MagicMock(return_value=[
+            RouterClient("192.168.100.134", "fc:34:97:60:c7:d0", "LAN2"),
+        ])
+        asus = object.__new__(AsusRouterSource)
+        asus.name = "asus"
+        asus.discover_via = "huawei"
+        asus.device_ouis = {"fc:34:97"}
+        asus.use_discovered_host = MagicMock()
+        asus.poll = MagicMock(return_value=PresenceObservation("asus", True, True, "matched phone"))
+        monitor.sources_by_name = {"huawei": huawei, "asus": asus}
+
+        result = monitor._retry_discovered_asus(
+            asus, PresenceObservation("asus", False, detail="old address failed"),
+        )
+
+        asus.use_discovered_host.assert_called_once_with("192.168.100.134")
+        self.assertTrue(result.available)
+        self.assertTrue(result.present)
+        self.assertIn("discovered via huawei", result.detail)
 
     def test_asus_rejects_login_page(self):
         with self.assertRaises(PermissionError):

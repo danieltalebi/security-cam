@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import getpass
 import http.cookiejar
+import ipaddress
 import json
 import os
 import re
@@ -159,6 +160,41 @@ class PresenceObservation:
     detail: str = ""
 
 
+@dataclass(frozen=True)
+class RouterClient:
+    ip: str
+    mac: str
+    interface: str
+    name: str = ""
+
+
+def huawei_ethernet_clients(text: str) -> list[RouterClient]:
+    """Parse active IPv4 Ethernet clients from Huawei's detailed device page."""
+    decoded = decode_huawei_javascript(text)
+    clients: dict[tuple[str, str], RouterClient] = {}
+    for arguments in re.findall(r"new\s+USERDev\s*\(([^)]*)\)", decoded, re.IGNORECASE):
+        fields = re.findall(r'"([^"]*)"', arguments)
+        if len(fields) < 8:
+            continue
+        path, ip, mac, interface = fields[:4]
+        status, medium = fields[6:8]
+        name = fields[9] if len(fields) > 9 else ""
+        try:
+            address = ipaddress.ip_address(ip)
+            normalized_mac = normalize_mac(mac)
+        except ValueError:
+            continue
+        if (
+            address.version == 4
+            and status.lower() == "online"
+            and medium.upper() == "ETH"
+            and path
+        ):
+            client = RouterClient(str(address), normalized_mac, interface, name)
+            clients[(client.ip, client.mac)] = client
+    return list(clients.values())
+
+
 class RouterSource:
     def __init__(self, config: dict):
         self.name = str(config.get("name") or config.get("type") or "router")
@@ -210,6 +246,7 @@ class RouterSource:
 
 class HuaweiRouterSource(RouterSource):
     CLIENT_PATH = "/html/bbsp/userdevinfo/userdevinfosmart.asp?type=wifidev"
+    DETAIL_PATH = "/html/bbsp/userdevinfo/userdetdevinfo.asp"
 
     def _login(self) -> None:
         if not self.username or not self.password:
@@ -240,8 +277,29 @@ class HuaweiRouterSource(RouterSource):
             raise PermissionError("Huawei login failed")
         return huawei_online_macs(page)
 
+    def ethernet_clients(self) -> list[RouterClient]:
+        page = self._request(self.DETAIL_PATH)
+        if "top.location.replace" in page or "Waiting..." in page:
+            self._login()
+            page = self._request(self.DETAIL_PATH)
+        if "top.location.replace" in page or "Waiting..." in page:
+            raise PermissionError("Huawei login failed")
+        return huawei_ethernet_clients(page)
+
 
 class AsusRouterSource(RouterSource):
+    def __init__(self, config: dict):
+        super().__init__(config)
+        self.discover_via = str(config.get("discover_via", ""))
+        self.device_ouis = {
+            normalize_mac(value + ":00:00:00")[:8]
+            for value in config.get("device_ouis", [])
+        }
+
+    def use_discovered_host(self, host: str) -> None:
+        self.host = "http://" + str(ipaddress.ip_address(host))
+        self._new_session()
+
     def _client_page(self) -> str:
         return self._request(
             "/update_clients.asp",
@@ -311,7 +369,18 @@ class RouterPresenceMonitor:
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         self.sources: list[RouterSource] = []
-        for source_config in config.get("sources", []):
+        source_configs = [dict(item) for item in config.get("sources", [])]
+        configs_by_name = {
+            str(item.get("name") or item.get("type") or "router"): item
+            for item in source_configs
+        }
+        for source_config in source_configs:
+            macs_from = source_config.get("macs_from")
+            if macs_from and not source_config.get("macs"):
+                referenced = configs_by_name.get(str(macs_from))
+                if not referenced:
+                    raise ValueError(f"Unknown presence macs_from source: {macs_from!r}")
+                source_config["macs"] = list(referenced.get("macs", []))
             source_type = str(source_config.get("type", "")).lower()
             source_class = SOURCE_TYPES.get(source_type)
             if not source_class:
@@ -319,6 +388,7 @@ class RouterPresenceMonitor:
             self.sources.append(source_class(source_config))
         if not self.sources:
             raise ValueError("Configure at least one router presence source")
+        self.sources_by_name = {source.name: source for source in self.sources}
 
     def start(self) -> "RouterPresenceMonitor":
         self.thread = threading.Thread(target=self._run, name="router-presence", daemon=True)
@@ -331,7 +401,12 @@ class RouterPresenceMonitor:
             self.thread.join(timeout=5)
 
     def poll_once(self) -> tuple[str, dict]:
-        observations = [source.poll() for source in self.sources]
+        observations = []
+        for source in self.sources:
+            observation = source.poll()
+            if isinstance(source, AsusRouterSource) and not observation.available:
+                observation = self._retry_discovered_asus(source, observation)
+            observations.append(observation)
         state = combined_presence(observations)
         attributes = {
             "checked_at": datetime.now().astimezone().isoformat(),
@@ -346,6 +421,48 @@ class RouterPresenceMonitor:
         }
         self.publish(state, attributes)
         return state, attributes
+
+    def _retry_discovered_asus(
+        self, source: AsusRouterSource, original: PresenceObservation,
+    ) -> PresenceObservation:
+        if not source.discover_via or not source.device_ouis:
+            return original
+        upstream = self.sources_by_name.get(source.discover_via)
+        if not isinstance(upstream, HuaweiRouterSource):
+            return PresenceObservation(
+                source.name, False,
+                detail=f"{original.detail}; discovery source {source.discover_via!r} is unavailable",
+            )
+        try:
+            clients = upstream.ethernet_clients()
+        except (HTTPError, URLError, TimeoutError, OSError, PermissionError, ValueError) as error:
+            return PresenceObservation(
+                source.name, False,
+                detail=f"{original.detail}; Huawei discovery failed: {type(error).__name__}",
+            )
+        candidates = [
+            client for client in clients
+            if any(client.mac.startswith(oui) for oui in source.device_ouis)
+        ]
+        if not candidates:
+            return PresenceObservation(
+                source.name, False,
+                detail=f"{original.detail}; no matching ASUS Ethernet client on Huawei",
+            )
+        failures = []
+        for client in candidates:
+            source.use_discovered_host(client.ip)
+            retried = source.poll()
+            if retried.available:
+                return PresenceObservation(
+                    retried.name, True, retried.present,
+                    detail=f"{retried.detail}; discovered via {upstream.name} at {client.ip}",
+                )
+            failures.append(client.ip)
+        return PresenceObservation(
+            source.name, False,
+            detail=f"{original.detail}; discovered ASUS at {', '.join(failures)} but it was unreachable",
+        )
 
     def _run(self) -> None:
         while not self.stop_event.is_set():

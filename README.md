@@ -132,6 +132,13 @@ HUAWEI_ROUTER_USER=...
 HUAWEI_ROUTER_PASSWORD=...
 ```
 
+The ASUS source may use `macs_from: "huawei"` so both routers match the same
+phones. If its configured management address stops responding,
+`discover_via: "huawei"` checks only the Huawei's active Ethernet clients for
+the configured ASUS OUI, updates the address in memory, and retries. Discovery
+failure makes presence unavailable rather than incorrectly reporting everyone
+away.
+
 On macOS, double-click `configure_router_presence.command` instead. It asks for
 both router logins, hides password input, and stores the four values in the
 current user's macOS Keychain. `router_presence.py` checks environment variables
