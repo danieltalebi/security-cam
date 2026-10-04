@@ -678,7 +678,7 @@ automation:
                 /until8, /testaway o /testreal. El máximo es 30 días.
 
   - id: security_camera_alarm_mode_changed
-    alias: Cameras - announce and mirror active alarm mode
+    alias: Cameras - mirror active alarm mode
     mode: queued
     triggers:
       - trigger: state
@@ -696,18 +696,6 @@ automation:
           - action: input_boolean.turn_on
             target:
               entity_id: input_boolean.security_camera_secure_mode
-      - action: telegram_bot.send_message
-        data:
-          message: >-
-            {% if trigger.to_state.state == 'armed_away' %}
-              🛡️ Alarma ARMADA FUERA. Cámaras exteriores y sensor interior activos.
-            {% elif trigger.to_state.state == 'armed_home' %}
-              🌙 Alarma ARMADA EN CASA. Solo cámaras exteriores; sensor interior ignorado.
-            {% else %}
-              🔓 Alarma DESARMADA. Backyard no solicitará imágenes ni video;
-              garage conservará su análisis local y no se enviarán alertas.
-            {% endif %}
-            Control: {{ states('input_select.security_camera_control_mode') }}.
 
   - id: security_camera_resume_after_pause
     alias: Cameras - resume notifications after pause
@@ -993,9 +981,3 @@ automation:
           entity_id: timer.security_camera_test_away
     actions:
       - action: script.security_camera_apply_alarm_policy
-      - action: telegram_bot.send_message
-        data:
-          message: >-
-            🧪 Finalizó la prueba ARMADA FUERA. Se restauró la política
-            {{ states('input_select.security_camera_control_mode') }} y el modo
-            activo es {{ states('input_select.security_camera_alarm_mode') }}.
