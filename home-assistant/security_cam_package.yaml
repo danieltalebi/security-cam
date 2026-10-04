@@ -321,6 +321,24 @@ script:
           entity_id: input_boolean.security_camera_notifications_paused
 
 automation:
+  - id: security_camera_publish_alarm_mode
+    alias: Cameras - publish active alarm mode to verifier
+    mode: restart
+    triggers:
+      - trigger: homeassistant
+        event: start
+      - trigger: state
+        entity_id: input_select.security_camera_alarm_mode
+    actions:
+      - delay:
+          seconds: 1
+      - action: mqtt.publish
+        data:
+          topic: security_cam/alarm/mode
+          payload: "{{ states('input_select.security_camera_alarm_mode') }}"
+          qos: 1
+          retain: true
+
   - id: security_camera_telegram_controls
     alias: Cameras - Telegram notification controls
     mode: queued
@@ -686,8 +704,8 @@ automation:
             {% elif trigger.to_state.state == 'armed_home' %}
               🌙 Alarma ARMADA EN CASA. Solo cámaras exteriores; sensor interior ignorado.
             {% else %}
-              🔓 Alarma DESARMADA. Las cámaras continuarán analizando eventos sin
-              enviar alertas y el sensor interior será ignorado.
+              🔓 Alarma DESARMADA. Backyard no solicitará imágenes ni video;
+              garage conservará su análisis local y no se enviarán alertas.
             {% endif %}
             Control: {{ states('input_select.security_camera_control_mode') }}.
 
@@ -742,7 +760,8 @@ automation:
       - condition: template
         alias: Ignore garage people confirmed in the public area
         value_template: >-
-          {{ trigger.payload_json.camera_slug in ['garage', 'backyard'] and
+          {{ trigger.payload_json.event_type == 'person_detected' and
+             trigger.payload_json.camera_slug in ['garage', 'backyard'] and
              trigger.payload_json.classification in ['private', 'uncertain', 'presence'] }}
     variables:
       camera_slug: "{{ trigger.payload_json.camera_slug }}"
@@ -834,6 +853,27 @@ automation:
               entity_id: input_text.security_camera_last_incident_source
             data:
               value: "{{ camera_slug }}"
+
+  - id: security_camera_visual_verification_failed
+    alias: Cameras - armed visual verification failure
+    mode: single
+    triggers:
+      - trigger: mqtt
+        topic: security_cam/+/event
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ trigger.payload_json.event_type == 'verification_failed' and
+             states('input_select.security_camera_alarm_mode') != 'disarmed' and
+             not is_state('input_boolean.security_camera_notifications_paused', 'on') }}
+    actions:
+      - action: telegram_bot.send_message
+        data:
+          message: >-
+            ⚠️ VERIFICACIÓN VISUAL IMPOSIBLE · {{ trigger.payload_json.camera }}.
+            Se recibió un evento DVRIP con la alarma armada, pero no fue posible
+            obtener una imagen ni video. Motivo: {{ trigger.payload_json.reason }}
+      - delay: "00:05:00"
 
   - id: security_camera_interior_presence_incident
     alias: Cameras - interior presence while armed away

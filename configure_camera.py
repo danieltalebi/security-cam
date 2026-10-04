@@ -61,7 +61,10 @@ def main() -> None:
     host = prompt("Camera hostname or reserved IP address")
     username = prompt("Camera username")
     password = prompt("Camera password", secret=True)
-    rtsp = prompt("Complete RTSP URL", required=mode == "property")
+    rtsp = prompt(
+        "Complete RTSP URL (recommended as verification fallback)",
+        required=mode == "property",
+    )
     snapshot = prompt("JPEG snapshot URL", f"http://{host}/webcapture.jpg?command=snap&channel=0")
     bot_token = ""
     chat_id = ""
@@ -73,7 +76,7 @@ def main() -> None:
     config = load_json(ROOT / template_name, {})
     prefix = f"CAMERA_{key}"
     config["camera"] = {"name": name, "credential_prefix": prefix, "host": host}
-    if mode == "property":
+    if rtsp:
         config["camera"]["rtsp_env"] = f"{prefix}_RTSP_URL"
     config["onvif"]["device_service"] = "http://{host}:8899/onvif/device_service"
     config["dvrip"]["host"] = "{host}"

@@ -18,6 +18,12 @@
     "xmeye_query_auth": true,
     "review_dir": "events/review/backyard"
   },
+  "confirmation": {
+    "model": "yolov8n.pt",
+    "confidence": 0.5,
+    "video_fallback_seconds": 8,
+    "video_sample_seconds": 0.8
+  },
   "telegram": {
     "token_env": "TELEGRAM_BOT_TOKEN",
     "chat_id_env": "TELEGRAM_CHAT_ID"

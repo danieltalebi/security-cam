@@ -83,6 +83,16 @@ HA_MQTT_PASSWORD=...
 
 Using a DNS name for `HA_MQTT_HOST` means that moving Home Assistant to another VM only requires updating DNS. Otherwise, change this one variable. Camera images and event entities are added automatically through MQTT discovery.
 
+Home Assistant publishes its active alarm mode back to the monitor on the
+retained `security_cam/alarm/mode` topic. While that mode is `armed_home` or
+`armed_away`, every backyard DVRIP `Start` event triggers visual verification:
+the monitor checks a JPEG snapshot with YOLO first, then samples a short RTSP
+window when the snapshot does not confirm a person. Confirmed people become
+incidents; negative checks are saved under the camera review directory without
+notifying. When neither source can provide evidence, Home Assistant sends a
+rate-limited technical warning. With the alarm disarmed, backyard triggers are
+ignored before any image or stream is requested.
+
 Copy `home-assistant/security_cam_package.yaml` into the Home Assistant packages directory. The package:
 
 - exposes disarmed, armed-home, and armed-away notification behavior;
@@ -337,7 +347,11 @@ Use one configuration file per physical camera, then list them in `multi-camera.
 python3 multi_camera_monitor.py --config multi-camera.json
 ```
 
-The `property` mode runs the public/private classifier; `presence` is for areas such as a back yard where any human detection is positive. It captures a JPEG, saves it, and sends it to Telegram without opening RTSP. On Windows, `setup_camera_windows.bat` creates and registers either mode interactively.
+The `property` mode runs the public/private classifier. `presence` is for areas
+such as a back yard where any visually confirmed person is positive. While the
+alarm is armed it checks a JPEG first and opens a short RTSP fallback only when
+needed. On Windows, `setup_camera_windows.bat` creates and registers either mode
+interactively.
 
 To test every configured camera without waiting for an event:
 

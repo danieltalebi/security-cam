@@ -12,6 +12,9 @@ from datetime import datetime
 import paho.mqtt.client as mqtt
 
 
+ALARM_MODES = {"disarmed", "armed_home", "armed_away"}
+
+
 def mqtt_slug(value: str) -> str:
     """Return a stable MQTT/Home Assistant identifier."""
     slug = re.sub(r"[^a-z0-9]+", "_", value.strip().lower()).strip("_")
@@ -43,6 +46,8 @@ class HomeAssistantMQTT:
         self._registered: dict[str, str] = {}
         self._camera_status: dict[str, bool] = {}
         self._presence_state: tuple[str, dict] | None = None
+        self._alarm_mode: str | None = None
+        self._alarm_mode_lock = threading.Lock()
 
         client_id = str(config.get("client_id") or f"security-cam-{uuid.uuid4().hex[:8]}")
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
@@ -54,6 +59,7 @@ class HomeAssistantMQTT:
             self.client.tls_set(ca_certs=config.get("ca_certs"))
         self.client.on_connect = self._on_connect
         self.client.on_disconnect = self._on_disconnect
+        self.client.on_message = self._on_message
         self.client.will_set(self._topic("app", "status"), "offline", qos=self.qos, retain=True)
 
     def _topic(self, *parts: str) -> str:
@@ -80,6 +86,7 @@ class HomeAssistantMQTT:
             print(f"MQTT connection rejected: {reason_code}")
             return
         self._connected.set()
+        self.client.subscribe(self._topic("alarm", "mode"), qos=self.qos)
         self.client.publish(self._topic("app", "status"), "online", qos=self.qos, retain=True)
         for name in list(self._registered.values()):
             self._publish_discovery(name)
@@ -94,6 +101,29 @@ class HomeAssistantMQTT:
 
     def _on_disconnect(self, _client, _userdata, _disconnect_flags, _reason_code, _properties) -> None:
         self._connected.clear()
+
+    def _on_message(self, _client, _userdata, message) -> None:
+        if message.topic != self._topic("alarm", "mode"):
+            return
+        try:
+            mode = message.payload.decode("utf-8").strip()
+        except (AttributeError, UnicodeDecodeError):
+            return
+        if mode not in ALARM_MODES:
+            print(f"Ignoring unsupported Home Assistant alarm mode: {mode!r}")
+            return
+        with self._alarm_mode_lock:
+            self._alarm_mode = mode
+        print(f"Home Assistant alarm mode: {mode}")
+
+    @property
+    def alarm_mode(self) -> str | None:
+        with self._alarm_mode_lock:
+            return self._alarm_mode
+
+    def should_verify_camera_events(self) -> bool:
+        """Fail safe while retained Home Assistant state is still arriving."""
+        return self.alarm_mode != "disarmed"
 
     def register_camera(self, name: str) -> None:
         slug = mqtt_slug(name)
@@ -143,6 +173,31 @@ class HomeAssistantMQTT:
         event_result.wait_for_publish(5)
         if event_result.rc != mqtt.MQTT_ERR_SUCCESS:
             raise ConnectionError("MQTT did not accept the camera event.")
+        return event_id
+
+    def publish_verification_failure(
+        self, name: str, reason: str, occurred_at: datetime,
+    ) -> str:
+        """Report that an armed camera trigger could not be visually checked."""
+        slug = mqtt_slug(name)
+        if slug not in self._registered:
+            self.register_camera(name)
+        event_id = uuid.uuid4().hex
+        payload = {
+            "event_type": "verification_failed",
+            "event_id": event_id,
+            "camera": name,
+            "camera_slug": slug,
+            "reason": reason,
+            "occurred_at": occurred_at.isoformat(),
+        }
+        result = self.client.publish(
+            self._topic(slug, "event"), json.dumps(payload, separators=(",", ":")),
+            qos=self.qos, retain=False,
+        )
+        result.wait_for_publish(5)
+        if result.rc != mqtt.MQTT_ERR_SUCCESS:
+            raise ConnectionError("MQTT did not accept the verification failure event.")
         return event_id
 
     def publish_presence(self, state: str, attributes: dict) -> None:
@@ -222,11 +277,11 @@ class HomeAssistantMQTT:
             "device": device,
         }
         event_config = {
-            "name": "Person detection",
+            "name": "Camera event",
             "unique_id": f"{identifier}_person",
             "default_entity_id": f"event.{identifier}_person",
             "state_topic": self._topic(slug, "event"),
-            "event_types": ["person_detected"],
+            "event_types": ["person_detected", "verification_failed"],
             "availability": availability,
             "availability_mode": "all",
             "device": device,

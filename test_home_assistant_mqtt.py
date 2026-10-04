@@ -50,8 +50,41 @@ class HomeAssistantMQTTTests(unittest.TestCase):
         self.assertEqual((topic, payload), ("security_cam/garage/status", "offline"))
         self.assertTrue(options["retain"])
 
+    def test_alarm_mode_is_subscribed_and_controls_verification(self):
+        self.bridge._on_connect(None, None, None, 0, None)
+        self.client.subscribe.assert_called_with("security_cam/alarm/mode", qos=1)
+        self.assertTrue(self.bridge.should_verify_camera_events())
+
+        message = MagicMock(topic="security_cam/alarm/mode", payload=b"disarmed")
+        self.bridge._on_message(None, None, message)
+        self.assertEqual(self.bridge.alarm_mode, "disarmed")
+        self.assertFalse(self.bridge.should_verify_camera_events())
+
+        message.payload = b"armed_away"
+        self.bridge._on_message(None, None, message)
+        self.assertTrue(self.bridge.should_verify_camera_events())
+
+    def test_verification_failure_is_published_as_camera_event(self):
+        self.bridge.register_camera("Backyard")
+        self.bridge.publish_verification_failure(
+            "Backyard", "snapshot and RTSP unavailable",
+            datetime(2026, 9, 11, tzinfo=timezone.utc),
+        )
+        topic, raw_payload, _options = self.published[-1]
+        self.assertEqual(topic, "security_cam/backyard/event")
+        payload = json.loads(raw_payload)
+        self.assertEqual(payload["event_type"], "verification_failed")
+        self.assertEqual(payload["camera_slug"], "backyard")
+
 
 class CameraHostTests(unittest.TestCase):
+    def setUp(self):
+        configured_patch = patch(
+            "camera_config.configured_value", side_effect=lambda name: os.environ.get(name),
+        )
+        self.addCleanup(configured_patch.stop)
+        configured_patch.start()
+
     def test_one_host_expands_every_endpoint(self):
         config = {
             "camera": {
