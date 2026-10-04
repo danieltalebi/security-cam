@@ -2,11 +2,11 @@
 
 import hashlib
 import json
-import os
 import struct
 from argparse import ArgumentParser
 from socket import create_connection
-from urllib.parse import urlparse
+
+from camera_config import credentials, dvrip_endpoint
 
 
 def xmeye_hash(password: str) -> str:
@@ -77,15 +77,8 @@ args = parser.parse_args()
 with open(args.config, encoding="utf-8") as source:
     config = json.load(source)
 
-onvif = config["onvif"]
-endpoint = urlparse(onvif["device_service"])
-dvrip = config.get("dvrip", {})
-host = dvrip.get("host", endpoint.hostname)
-port = int(dvrip.get("port", 34567))
-username = os.environ.get(dvrip.get("username_env", "CAMERA_DVRIP_USER")) or os.environ.get(onvif.get("username_env", "CAMERA_ONVIF_USER"))
-password = os.environ.get(dvrip.get("password_env", "CAMERA_DVRIP_PASSWORD")) or os.environ.get(onvif.get("password_env", "CAMERA_ONVIF_PASSWORD"))
-if not host or not username or not password:
-    raise SystemExit("Set CAMERA_DVRIP_USER/PASSWORD or CAMERA_ONVIF_USER/PASSWORD first.")
+host, port = dvrip_endpoint(config)
+username, password = credentials(config)
 
 probe = DVRIPProbe(host, port, username, password)
 try:

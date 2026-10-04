@@ -1,10 +1,11 @@
 """Print safe ONVIF PTZ diagnostics for every media profile."""
 
 import json
-import os
 import time
 from argparse import ArgumentParser
 from urllib.parse import urlparse
+
+from camera_config import credentials, expand_host
 
 
 def position_values(status):
@@ -31,11 +32,11 @@ parser.add_argument("--samples", type=int, default=12, help="One sample per seco
 args = parser.parse_args()
 
 with open(args.config, encoding="utf-8") as source:
-    config = json.load(source)["onvif"]
+    full_config = json.load(source)
+config = full_config["onvif"]
 
-endpoint = urlparse(config["device_service"])
-username = os.environ.get(config.get("username_env", "CAMERA_ONVIF_USER"))
-password = os.environ.get(config.get("password_env", "CAMERA_ONVIF_PASSWORD"))
+endpoint = urlparse(expand_host(config["device_service"], full_config))
+username, password = credentials(full_config)
 if not endpoint.hostname or not endpoint.port:
     raise SystemExit("Invalid ONVIF device_service in the configuration.")
 if not username or not password:

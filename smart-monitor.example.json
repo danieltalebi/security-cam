@@ -2,6 +2,7 @@
   "camera": {
     "name": "garage",
     "credential_prefix": "CAMERA_GARAGE",
+    "host": "garage-camera.local",
     "rtsp_env": "CAMERA_GARAGE_RTSP_URL"
   },
   "layout": {
@@ -43,19 +44,21 @@
   },
   "onvif": {
     "enabled": false,
-    "device_service": "http://CAMERA_IP:8899/onvif/device_service",
+    "device_service": "http://{host}:8899/onvif/device_service",
     "profile_name": "mainStream",
     "poll_seconds": 1
   },
   "dvrip": {
+    "host": "{host}",
     "port": 34567,
     "listen_events": false,
     "analysis_seconds": 10,
     "keep_rtsp_warm": true,
+    "event_debounce_seconds": 3,
     "notification_cooldown_seconds": 40
   },
   "snapshot": {
-    "url": "http://CAMERA_IP/webcapture.jpg?command=snap&channel=0",
+    "url": "http://{host}/webcapture.jpg?command=snap&channel=0",
     "xmeye_query_auth": true,
     "review_dir": "events/review",
     "video_fallback_seconds": 8,

@@ -14,13 +14,13 @@ import sys
 import uuid
 from argparse import ArgumentParser
 from datetime import datetime
-from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 import cv2
 import numpy as np
 
 from dvrip_events import DVRIPConnection
+from camera_config import credentials, dvrip_endpoint, expand_host, rtsp_url
 
 
 def get_env(name: str) -> str:
@@ -86,28 +86,23 @@ def send_telegram_photo(token: str, chat_id: str, image: bytes, caption: str) ->
 def main() -> None:
     parser = ArgumentParser(description="Capture one current RTSP frame and send it to Telegram.")
     parser.add_argument("--config", default="smart-monitor.json")
-    parser.add_argument("--stream", default=os.environ.get("CAMERA_GARAGE_RTSP_URL"))
+    parser.add_argument("--stream", default=None)
     parser.add_argument("--timeout", type=float, default=10)
     args = parser.parse_args()
-    if not args.stream:
-        parser.error("provide --stream or set CAMERA_GARAGE_RTSP_URL")
-
     with open(args.config, encoding="utf-8") as source:
         config = json.load(source)
+    args.stream = expand_host(args.stream, config) if args.stream else rtsp_url(config)
+    if not args.stream:
+        parser.error("provide --stream or set CAMERA_<NAME>_RTSP_URL")
     layout = config.get("layout", {})
     width = max((int(bounds[2]) for bounds in layout.values()), default=0)
     height = max((int(bounds[3]) for bounds in layout.values()), default=0)
     if not width or not height:
         raise RuntimeError("smart-monitor.json needs layout bounds to decode one RTSP frame.")
-    dvrip = config.get("dvrip", {})
-    endpoint = urlparse(config["onvif"]["device_service"])
-    host = dvrip.get("host", endpoint.hostname)
-    if not host:
-        raise RuntimeError("No camera host was found in smart-monitor.json.")
-    username = os.environ.get(dvrip.get("username_env", "CAMERA_DVRIP_USER")) or get_env(config["onvif"].get("username_env", "CAMERA_GARAGE_ONVIF_USER"))
-    password = os.environ.get(dvrip.get("password_env", "CAMERA_DVRIP_PASSWORD")) or get_env(config["onvif"].get("password_env", "CAMERA_GARAGE_ONVIF_PASSWORD"))
+    host, port = dvrip_endpoint(config)
+    username, password = credentials(config)
 
-    connection = DVRIPConnection(host, int(dvrip.get("port", 34567)), username, password, timeout=args.timeout)
+    connection = DVRIPConnection(host, port, username, password, timeout=args.timeout)
     try:
         connection.connect()
         connection.login()

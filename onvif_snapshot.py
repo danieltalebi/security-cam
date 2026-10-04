@@ -21,7 +21,7 @@ from urllib.request import (
     build_opener,
 )
 
-from camera_config import credentials
+from camera_config import credentials, expand_host
 
 
 def select_profile(profiles, requested_name: str | None):
@@ -81,7 +81,7 @@ def main():
     with open(args.config, encoding="utf-8") as source:
         config = json.load(source)
     onvif_config = config["onvif"]
-    endpoint = urlparse(onvif_config["device_service"])
+    endpoint = urlparse(expand_host(onvif_config["device_service"], config))
     username, password = credentials(config)
     if not endpoint.hostname or not endpoint.port:
         raise SystemExit("Invalid ONVIF device_service in the configuration.")

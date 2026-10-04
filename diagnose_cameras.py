@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from argparse import ArgumentParser
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from dvrip_smart_telegram import load_windows_user_environment
 from multi_camera_monitor import camera_credentials
 from onvif_snapshot import download_snapshot, xmeye_snapshot_uri
 from telegram_notify import TelegramNotifier
-from camera_config import credentials
+from camera_config import credentials, expand_host
 
 
 def load(path: Path) -> dict:
@@ -22,7 +23,7 @@ def load(path: Path) -> dict:
 def check_camera(name: str, config: dict, send_telegram: bool) -> bool:
     ok = True
     try:
-        host, port, user, password = camera_credentials(config)
+        host, port, user, password = camera_credentials(config, name)
         connection = DVRIPConnection(host, port, user, password, timeout=8)
         try:
             connection.connect()
@@ -37,7 +38,7 @@ def check_camera(name: str, config: dict, send_telegram: bool) -> bool:
     try:
         user, password = credentials(config, name)
         snapshot = config["snapshot"]
-        uri = snapshot["url"]
+        uri = expand_host(snapshot["url"], config, name)
         if snapshot.get("xmeye_query_auth", False):
             uri = xmeye_snapshot_uri(uri, user, password)
         image = download_snapshot(uri, user, password, 8)

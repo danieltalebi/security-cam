@@ -1,0 +1,176 @@
+title: Security Cameras
+views:
+  - title: Control
+    path: control
+    icon: mdi:shield-home
+    cards:
+      - type: markdown
+        title: Alarm status
+        content: >-
+          {% set mode = states('input_select.security_camera_alarm_mode') %}
+          {% set control = states('input_select.security_camera_control_mode') %}
+          {% set wifi = states('binary_sensor.security_camera_phone_wifi_presence') %}
+          # {% if mode == 'armed_away' %}🛡️ Armed away
+          {% elif mode == 'armed_home' %}🌙 Armed at home
+          {% else %}🔓 Disarmed{% endif %}
+
+          **Control:** {{ control | replace('_', ' ') | title }}  
+          **Phone Wi-Fi:** {% if wifi == 'on' %}Home{% elif wifi == 'off' %}Away{% else %}Unavailable{% endif %}  
+          **GPS zone:** {{ states('zone.home') }} person(s) home  
+          **Alerts:** {% if is_state('input_boolean.security_camera_notifications_paused', 'on') %}🔕 Paused{% else %}🔔 Active{% endif %}
+
+      - type: grid
+        title: Alarm mode
+        columns: 2
+        square: false
+        cards:
+          - type: button
+            name: Automatic
+            icon: mdi:shield-sync
+            tap_action:
+              action: call-service
+              service: script.security_camera_set_automatic
+            hold_action:
+              action: more-info
+              entity: input_select.security_camera_control_mode
+          - type: button
+            name: Disarm
+            icon: mdi:shield-off-outline
+            tap_action:
+              action: call-service
+              service: script.security_camera_disarm
+            confirmation:
+              text: Disarm the camera alarm?
+          - type: button
+            name: Arm at home
+            icon: mdi:shield-home-outline
+            tap_action:
+              action: call-service
+              service: script.security_camera_arm_home
+          - type: button
+            name: Arm away
+            icon: mdi:shield-lock-outline
+            tap_action:
+              action: call-service
+              service: script.security_camera_arm_away
+
+      - type: entities
+        title: Notification pause
+        show_header_toggle: false
+        entities:
+          - entity: input_boolean.security_camera_notifications_paused
+            name: Alerts paused
+          - entity: timer.security_camera_notification_pause
+            name: Remaining
+          - entity: input_number.security_camera_pause_minutes
+            name: Custom duration
+
+      - type: grid
+        columns: 2
+        square: false
+        cards:
+          - type: button
+            name: Pause 15 min
+            icon: mdi:timer-pause-outline
+            tap_action:
+              action: call-service
+              service: script.security_camera_pause_15m
+          - type: button
+            name: Pause 1 hour
+            icon: mdi:timer-pause
+            tap_action:
+              action: call-service
+              service: script.security_camera_pause_1h
+          - type: button
+            name: Pause custom
+            icon: mdi:timer-cog-outline
+            tap_action:
+              action: call-service
+              service: script.security_camera_pause_custom
+          - type: button
+            name: Until 08:00
+            icon: mdi:weather-sunset-up
+            tap_action:
+              action: call-service
+              service: script.security_camera_pause_until_8am
+          - type: button
+            name: Pause indefinitely
+            icon: mdi:bell-off-outline
+            tap_action:
+              action: call-service
+              service: script.security_camera_pause_indefinitely
+          - type: button
+            name: Resume alerts
+            icon: mdi:bell-ring-outline
+            tap_action:
+              action: call-service
+              service: script.security_camera_resume_notifications
+
+      - type: markdown
+        title: Active incidents
+        content: >-
+          **Garage:** {% if is_state('input_boolean.security_camera_garage_incident_active', 'on') %}🚨 Active · {% if is_state('input_boolean.security_camera_garage_incident_acknowledged', 'on') %}acknowledged{% else %}waiting for OK{% endif %}{% else %}quiet{% endif %}  
+          **Backyard:** {% if is_state('input_boolean.security_camera_backyard_incident_active', 'on') %}🚨 Active · {% if is_state('input_boolean.security_camera_backyard_incident_acknowledged', 'on') %}acknowledged{% else %}waiting for OK{% endif %}{% else %}quiet{% endif %}  
+          **Interior:** {% if is_state('input_boolean.security_camera_interior_incident_active', 'on') %}🚨 Active · {% if is_state('input_boolean.security_camera_interior_incident_acknowledged', 'on') %}acknowledged{% else %}waiting for OK{% endif %}{% else %}quiet{% endif %}
+
+      - type: button
+        name: Acknowledge active incidents
+        icon: mdi:check-decagram
+        tap_action:
+          action: call-service
+          service: script.security_camera_acknowledge_active_incidents
+
+  - title: Cameras
+    path: cameras
+    icon: mdi:cctv
+    cards:
+      - type: picture-entity
+        entity: camera.security_cam_garage
+        name: Garage · last detection
+        camera_view: auto
+        show_state: true
+        show_name: true
+      - type: picture-entity
+        entity: camera.security_cam_backyard
+        name: Backyard · last detection
+        camera_view: auto
+        show_state: true
+        show_name: true
+      - type: entities
+        title: Detection sources
+        show_header_toggle: false
+        entities:
+          - entity: binary_sensor.sensor_de_presencia_humana_motion
+            name: Interior human presence
+          - entity: binary_sensor.security_camera_phone_wifi_presence
+            name: Phone on home Wi-Fi
+          - entity: input_text.security_camera_last_incident_source
+            name: Last incident source
+
+  - title: Diagnostics
+    path: diagnostics
+    icon: mdi:information-outline
+    cards:
+      - type: entities
+        title: Controller
+        show_header_toggle: false
+        entities:
+          - entity: input_select.security_camera_control_mode
+          - entity: input_select.security_camera_alarm_mode
+          - entity: input_select.security_camera_manual_alarm_mode
+          - entity: timer.security_camera_test_away
+          - entity: binary_sensor.security_camera_phone_wifi_presence
+          - entity: zone.home
+      - type: entities
+        title: Incident counters
+        show_header_toggle: false
+        entities:
+          - entity: input_number.security_camera_garage_notification_count
+            name: Garage notifications
+          - entity: input_number.security_camera_backyard_notification_count
+            name: Backyard notifications
+          - entity: input_number.security_camera_interior_notification_count
+            name: Interior notifications
+          - entity: timer.security_camera_garage_incident_quiet
+          - entity: timer.security_camera_backyard_incident_quiet
+          - entity: timer.security_camera_interior_incident_quiet

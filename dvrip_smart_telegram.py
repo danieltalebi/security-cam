@@ -9,6 +9,7 @@ import threading
 import time
 from argparse import ArgumentParser
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 import cv2
 import numpy as np
@@ -19,7 +20,10 @@ from onvif_snapshot import download_snapshot, xmeye_snapshot_uri
 from public_area import PublicAreaClassifier
 from telegram_notify import CameraConnectivityAlerts, TelegramNotifier
 from camera_config import credentials, dvrip_endpoint, required_env, rtsp_url
-from camera_config import camera_name
+from camera_config import camera_name, expand_host
+
+if TYPE_CHECKING:
+    from home_assistant_mqtt import HomeAssistantMQTT
 
 
 def load_windows_user_environment() -> None:
@@ -44,7 +48,10 @@ def load_windows_user_environment() -> None:
                 except OSError:
                     break
                 index += 1
-                if value and (name.startswith("CAMERA_") or name in {"TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"}):
+                if value and (
+                    name.startswith("CAMERA_") or name.startswith("HA_MQTT_")
+                    or name in {"TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"}
+                ):
                     os.environ[name] = str(value)
     except OSError:
         # Environment variables supplied by the launcher still work when the
@@ -53,16 +60,21 @@ def load_windows_user_environment() -> None:
 
 
 class SmartAlarm:
-    def __init__(self, config: dict, stream: str):
+    def __init__(
+        self, config: dict, stream: str,
+        notifier: TelegramNotifier | None = None,
+        home_assistant: "HomeAssistantMQTT | None" = None,
+        name: str | None = None,
+    ):
         self.config, self.stream = config, stream
-        self.name = camera_name(config)
+        self.name = name or camera_name(config)
         self.layout = config["layout"]
         self.width = max(bounds[2] for bounds in self.layout.values())
         self.height = max(bounds[3] for bounds in self.layout.values())
-        self.username, self.password = credentials(config)
-        telegram = config["telegram"]
-        self.telegram = TelegramNotifier(required_env(telegram["token_env"]), required_env(telegram["chat_id_env"])).start_command_listener()
-        self.snapshot_url = config["snapshot"]["url"]
+        self.username, self.password = credentials(config, self.name)
+        self.telegram = notifier
+        self.home_assistant = home_assistant
+        self.snapshot_url = expand_host(config["snapshot"]["url"], config, self.name)
         self.snapshot_query_auth = bool(config["snapshot"].get("xmeye_query_auth", False))
         policy = config["public_area_classifier"]
         self.public_threshold = float(policy["public_threshold"])
@@ -75,6 +87,9 @@ class SmartAlarm:
         self.notification_cooldown = float(config.get("dvrip", {}).get("notification_cooldown_seconds", 40))
         self.last_private_notification_at = float("-inf")
         self.notification_lock = threading.Lock()
+        self.event_debounce = float(config.get("dvrip", {}).get("event_debounce_seconds", 3))
+        self.last_accepted_event_at = float("-inf")
+        self.event_lock = threading.Lock()
 
     def analyze(self, frame: np.ndarray) -> tuple[str, np.ndarray, int]:
         result = self.model.predict(frame, classes=[0], conf=0.5, verbose=False)[0]
@@ -125,6 +140,8 @@ class SmartAlarm:
 
     def notify_private(self, frame: np.ndarray, source: str, count: int) -> None:
         """Notify only confirmed property detections, while still saving every event."""
+        if self.telegram is None:
+            return
         with self.notification_lock:
             now = time.monotonic()
             remaining = self.notification_cooldown - (now - self.last_private_notification_at)
@@ -133,6 +150,19 @@ class SmartAlarm:
                 return
             self.last_private_notification_at = now
         self.telegram.send_photo(self.jpeg(frame), f"{self.name} camera · {source} · private · persons={count}")
+
+    def publish_detection(
+        self, frame: np.ndarray, source: str, decision: str, count: int,
+        occurred_at: datetime,
+    ) -> None:
+        if self.home_assistant is None:
+            return
+        try:
+            self.home_assistant.publish_detection(
+                self.name, self.jpeg(frame), decision, count, source, occurred_at,
+            )
+        except Exception as error:
+            print(f"Home Assistant MQTT publish failed: {type(error).__name__}: {error}")
 
     def fetch_snapshot(self) -> np.ndarray:
         uri = xmeye_snapshot_uri(self.snapshot_url, self.username, self.password) if self.snapshot_query_auth else self.snapshot_url
@@ -172,17 +202,27 @@ class SmartAlarm:
             last, last_count = annotated, count
             if decision != "uncertain":
                 self.save_result(annotated, "video", decision, count, occurred_at)
+                self.publish_detection(annotated, "video", decision, count, occurred_at)
                 if decision == "private":
                     self.notify_private(annotated, "video fallback", count)
                 print(f"DVRIP video decision: {decision} ({count} persons)")
                 return
         if last is not None:
             self.save_result(last, "video", "uncertain", last_count, occurred_at)
+            self.publish_detection(last, "video", "uncertain", last_count, occurred_at)
             print(f"DVRIP video decision: uncertain ({last_count} persons)")
 
     def handle_event(self, event: dict) -> None:
         if event.get("type") != "person" or event.get("status") != "Start":
             return
+        # DVRIP firmware can emit a burst of identical Start packets for one
+        # person. Collapse those packets before starting expensive snapshot and
+        # YOLO work; Home Assistant performs the longer incident correlation.
+        with self.event_lock:
+            now = time.monotonic()
+            if now - self.last_accepted_event_at < self.event_debounce:
+                return
+            self.last_accepted_event_at = now
         # Analyze every camera event. Only confirmed private notifications are
         # rate-limited, so the review folders preserve all audit evidence.
         threading.Thread(target=self._handle_event, args=(datetime.now().astimezone(),), daemon=True).start()
@@ -195,8 +235,10 @@ class SmartAlarm:
             print(f"DVRIP image decision: {decision} ({count} persons)")
             if decision == "uncertain":
                 self.fallback(occurred_at)
-            elif decision == "private":
-                self.notify_private(annotated, "image", count)
+            else:
+                self.publish_detection(annotated, "image", decision, count, occurred_at)
+                if decision == "private":
+                    self.notify_private(annotated, "image", count)
         except Exception as error:
             print(f"DVRIP snapshot analysis failed: {type(error).__name__}: {error}")
             try:
@@ -219,8 +261,12 @@ def main():
         args.stream = rtsp_url(config)
     if not args.stream:
         parser.error("provide --stream or set this camera's CAMERA_<NAME>_RTSP_URL")
-    worker = SmartAlarm(config, args.stream)
-    connectivity = CameraConnectivityAlerts(worker.name, worker.telegram)
+    telegram = config["telegram"]
+    notifier = TelegramNotifier(
+        required_env(telegram["token_env"]), required_env(telegram["chat_id_env"]),
+    ).start_command_listener()
+    worker = SmartAlarm(config, args.stream, notifier=notifier)
+    connectivity = CameraConnectivityAlerts(worker.name, notifier)
     host, port = dvrip_endpoint(config)
     user, password = credentials(config)
     listener = DVRIPAlarmListener(

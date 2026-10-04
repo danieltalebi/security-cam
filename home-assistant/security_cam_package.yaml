@@ -1,0 +1,961 @@
+# Copy this file into the Home Assistant packages directory and enable packages.
+# The MQTT camera and event entities themselves are created through discovery.
+
+input_boolean:
+  security_camera_secure_mode:
+    name: Camera secure mode (legacy mirror)
+    icon: mdi:shield-home
+  security_camera_notifications_paused:
+    name: Camera notifications paused
+    icon: mdi:bell-sleep
+  security_camera_garage_incident_active:
+    name: Garage incident active
+  security_camera_garage_incident_acknowledged:
+    name: Garage incident acknowledged
+  security_camera_backyard_incident_active:
+    name: Backyard incident active
+  security_camera_backyard_incident_acknowledged:
+    name: Backyard incident acknowledged
+  security_camera_interior_incident_active:
+    name: Interior presence incident active
+  security_camera_interior_incident_acknowledged:
+    name: Interior presence incident acknowledged
+
+input_select:
+  security_camera_control_mode:
+    name: Camera alarm control
+    icon: mdi:tune-variant
+    options:
+      - automatic
+      - manual
+  security_camera_manual_alarm_mode:
+    name: Camera alarm manual selection
+    icon: mdi:shield-edit
+    options:
+      - disarmed
+      - armed_home
+      - armed_away
+  security_camera_alarm_mode:
+    name: Camera alarm active mode
+    icon: mdi:shield-home
+    options:
+      - disarmed
+      - armed_home
+      - armed_away
+
+input_text:
+  security_camera_last_incident_source:
+    name: Last camera incident source
+    initial: none
+    max: 32
+
+input_number:
+  security_camera_pause_minutes:
+    name: Camera notification pause duration
+    icon: mdi:timer-cog-outline
+    initial: 60
+    min: 5
+    max: 1440
+    step: 5
+    mode: box
+    unit_of_measurement: min
+  security_camera_garage_notification_count:
+    name: Garage incident notification count
+    initial: 0
+    min: 0
+    max: 1000
+    step: 1
+    mode: box
+  security_camera_garage_last_notification:
+    name: Garage incident last notification timestamp
+    initial: 0
+    min: 0
+    max: 4102444800
+    step: 1
+    mode: box
+  security_camera_backyard_notification_count:
+    name: Backyard incident notification count
+    initial: 0
+    min: 0
+    max: 1000
+    step: 1
+    mode: box
+  security_camera_backyard_last_notification:
+    name: Backyard incident last notification timestamp
+    initial: 0
+    min: 0
+    max: 4102444800
+    step: 1
+    mode: box
+  security_camera_interior_notification_count:
+    name: Interior incident notification count
+    initial: 0
+    min: 0
+    max: 1000
+    step: 1
+    mode: box
+  security_camera_interior_last_notification:
+    name: Interior incident last notification timestamp
+    initial: 0
+    min: 0
+    max: 4102444800
+    step: 1
+    mode: box
+
+timer:
+  security_camera_notification_pause:
+    name: Camera notification pause
+    restore: true
+  security_camera_test_away:
+    name: Camera alarm simulated away mode
+    duration: "00:15:00"
+  security_camera_garage_incident_quiet:
+    name: Garage incident quiet timeout
+    duration: "00:01:00"
+  security_camera_backyard_incident_quiet:
+    name: Backyard incident quiet timeout
+    duration: "00:01:00"
+  security_camera_interior_incident_quiet:
+    name: Interior incident quiet timeout
+    duration: "00:01:00"
+
+script:
+  security_camera_apply_alarm_policy:
+    alias: Apply camera alarm control policy
+    mode: restart
+    sequence:
+      - variables:
+          desired_mode: >-
+            {% if is_state('input_select.security_camera_control_mode', 'manual') %}
+              {{ states('input_select.security_camera_manual_alarm_mode') }}
+            {% elif states('binary_sensor.security_camera_phone_wifi_presence') in ['unknown', 'unavailable'] %}
+              {{ states('input_select.security_camera_alarm_mode') }}
+            {% elif is_state('binary_sensor.security_camera_phone_wifi_presence', 'off')
+                    and (as_timestamp(now()) - as_timestamp(states.binary_sensor.security_camera_phone_wifi_presence.last_changed)) >= 300 %}
+              armed_away
+            {% elif is_state('binary_sensor.security_camera_phone_wifi_presence', 'off') %}
+              {{ states('input_select.security_camera_alarm_mode') }}
+            {% elif today_at('08:30') <= now() < today_at('23:00') %}
+              disarmed
+            {% else %}
+              armed_home
+            {% endif %}
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.security_camera_alarm_mode
+        data:
+          option: "{{ desired_mode | trim }}"
+
+  security_camera_set_automatic:
+    alias: Set camera alarm control to automatic
+    icon: mdi:shield-sync
+    sequence:
+      - action: timer.cancel
+        target:
+          entity_id: timer.security_camera_test_away
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.security_camera_control_mode
+        data:
+          option: automatic
+      - action: script.security_camera_apply_alarm_policy
+
+  security_camera_disarm:
+    alias: Disarm camera alarm manually
+    icon: mdi:shield-off-outline
+    sequence:
+      - action: timer.cancel
+        target:
+          entity_id: timer.security_camera_test_away
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.security_camera_manual_alarm_mode
+        data:
+          option: disarmed
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.security_camera_control_mode
+        data:
+          option: manual
+      - action: script.security_camera_apply_alarm_policy
+
+  security_camera_arm_home:
+    alias: Arm camera alarm in home mode manually
+    icon: mdi:shield-home-outline
+    sequence:
+      - action: timer.cancel
+        target:
+          entity_id: timer.security_camera_test_away
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.security_camera_manual_alarm_mode
+        data:
+          option: armed_home
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.security_camera_control_mode
+        data:
+          option: manual
+      - action: script.security_camera_apply_alarm_policy
+
+  security_camera_arm_away:
+    alias: Arm camera alarm in away mode manually
+    icon: mdi:shield-lock-outline
+    sequence:
+      - action: timer.cancel
+        target:
+          entity_id: timer.security_camera_test_away
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.security_camera_manual_alarm_mode
+        data:
+          option: armed_away
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.security_camera_control_mode
+        data:
+          option: manual
+      - action: script.security_camera_apply_alarm_policy
+
+  security_camera_acknowledge_active_incidents:
+    alias: Acknowledge active camera incidents
+    icon: mdi:check-decagram
+    sequence:
+      - if:
+          - condition: state
+            entity_id: input_boolean.security_camera_garage_incident_active
+            state: "on"
+        then:
+          - action: input_boolean.turn_on
+            target:
+              entity_id: input_boolean.security_camera_garage_incident_acknowledged
+      - if:
+          - condition: state
+            entity_id: input_boolean.security_camera_backyard_incident_active
+            state: "on"
+        then:
+          - action: input_boolean.turn_on
+            target:
+              entity_id: input_boolean.security_camera_backyard_incident_acknowledged
+      - if:
+          - condition: state
+            entity_id: input_boolean.security_camera_interior_incident_active
+            state: "on"
+        then:
+          - action: input_boolean.turn_on
+            target:
+              entity_id: input_boolean.security_camera_interior_incident_acknowledged
+
+  security_camera_pause_15m:
+    alias: Pause camera notifications for 15 minutes
+    sequence:
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.security_camera_notifications_paused
+      - action: timer.start
+        target:
+          entity_id: timer.security_camera_notification_pause
+        data:
+          duration: "00:15:00"
+
+  security_camera_pause_1h:
+    alias: Pause camera notifications for 1 hour
+    sequence:
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.security_camera_notifications_paused
+      - action: timer.start
+        target:
+          entity_id: timer.security_camera_notification_pause
+        data:
+          duration: "01:00:00"
+
+  security_camera_pause_custom:
+    alias: Pause camera notifications for selected duration
+    sequence:
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.security_camera_notifications_paused
+      - action: timer.start
+        target:
+          entity_id: timer.security_camera_notification_pause
+        data:
+          duration: >-
+            {{ states('input_number.security_camera_pause_minutes') | int(60) * 60 }}
+
+  security_camera_pause_until_8am:
+    alias: Pause camera notifications until 8 AM
+    sequence:
+      - variables:
+          next_8am: >-
+            {% set today_8am = today_at('08:00') %}
+            {{ today_8am if now() < today_8am else today_8am + timedelta(days=1) }}
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.security_camera_notifications_paused
+      - action: timer.start
+        target:
+          entity_id: timer.security_camera_notification_pause
+        data:
+          duration: >-
+            {{ (as_timestamp(next_8am) - as_timestamp(now())) | int }}
+
+  security_camera_pause_indefinitely:
+    alias: Pause camera notifications indefinitely
+    sequence:
+      - action: timer.cancel
+        target:
+          entity_id: timer.security_camera_notification_pause
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.security_camera_notifications_paused
+
+  security_camera_resume_notifications:
+    alias: Resume camera notifications
+    sequence:
+      - action: timer.cancel
+        target:
+          entity_id: timer.security_camera_notification_pause
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.security_camera_notifications_paused
+
+automation:
+  - id: security_camera_telegram_controls
+    alias: Cameras - Telegram notification controls
+    mode: queued
+    max: 10
+    triggers:
+      - trigger: state
+        entity_id: event.security_cam_update_event
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ trigger.to_state.attributes.event_type in
+             ['telegram_text', 'telegram_command', 'telegram_callback'] }}
+    variables:
+      raw_command: >-
+        {% set telegram_event = trigger.to_state.attributes %}
+        {% if telegram_event.event_type == 'telegram_callback' %}
+          {{ telegram_event.data | default('') }}
+        {% elif telegram_event.event_type == 'telegram_command' %}
+          {{ telegram_event.command | default('') }} {{ telegram_event.args | default('') }}
+        {% else %}
+          {{ telegram_event.text | default('') }}
+        {% endif %}
+      normalized_command: >-
+        {{ raw_command | trim | lower
+           | regex_replace('^/pause(@[a-z0-9_]+)?\\s*', '')
+           | regex_replace('^pause\\s*', '') }}
+      duration_seconds: >-
+        {% set matches = normalized_command
+           | regex_findall('(\\d+(?:\\.\\d+)?)\\s*([mh])') %}
+        {% set leftover = normalized_command
+           | regex_replace('\\d+(?:\\.\\d+)?\\s*[mh]', '') | trim %}
+        {% set duration = namespace(total=0) %}
+        {% for amount, unit in matches %}
+          {% set multiplier = 3600 if unit == 'h' else 60 %}
+          {% set duration.total = duration.total + (amount | float) * multiplier %}
+        {% endfor %}
+        {{ duration.total | int if leftover == '' else 0 }}
+      acknowledge_source: >-
+        {% set candidates = ['garage', 'backyard', 'interior'] %}
+        {% set requested = normalized_command
+           | regex_replace('^/', '')
+           | regex_replace('^(ok|ack)[_ ]?', '') %}
+        {% if requested in candidates %}
+          {{ requested }}
+        {% elif normalized_command in ['ok', '/ok', 'ack', '/ack'] %}
+          {% set last = states('input_text.security_camera_last_incident_source') %}
+          {% if last in candidates and
+                is_state('input_boolean.security_camera_' ~ last ~ '_incident_active', 'on') %}
+            {{ last }}
+          {% elif is_state('input_boolean.security_camera_garage_incident_active', 'on') %}
+            garage
+          {% elif is_state('input_boolean.security_camera_backyard_incident_active', 'on') %}
+            backyard
+          {% elif is_state('input_boolean.security_camera_interior_incident_active', 'on') %}
+            interior
+          {% else %}
+            none
+          {% endif %}
+        {% else %}
+          none
+        {% endif %}
+      acknowledge_source_clean: "{{ acknowledge_source | trim }}"
+    actions:
+      - choose:
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ normalized_command in ['ok', '/ok', 'ack', '/ack'] or
+                     normalized_command is match('^/?(ok|ack)[_ ](garage|backyard|interior)$') }}
+            sequence:
+              - if:
+                  - condition: template
+                    value_template: "{{ acknowledge_source_clean in ['garage', 'backyard', 'interior'] }}"
+                then:
+                  - action: input_boolean.turn_on
+                    target:
+                      entity_id: >-
+                        input_boolean.security_camera_{{ acknowledge_source_clean }}_incident_acknowledged
+                  - if:
+                      - condition: template
+                        value_template: >-
+                          {{ trigger.to_state.attributes.event_type == 'telegram_callback' }}
+                    then:
+                      - action: telegram_bot.answer_callback_query
+                        data:
+                          callback_query_id: "{{ trigger.to_state.attributes.id }}"
+                          message: "Incidente {{ acknowledge_source_clean }} reconocido."
+                          show_alert: false
+                    else:
+                      - action: telegram_bot.send_message
+                        data:
+                          chat_id: "{{ trigger.to_state.attributes.chat_id | int }}"
+                          message: >-
+                            ✅ Incidente {{ acknowledge_source_clean }} reconocido. La alarma
+                            continúa armada; este incidente queda silenciado hasta que
+                            finalice tras 60 segundos sin detecciones.
+                else:
+                  - action: telegram_bot.send_message
+                    data:
+                      chat_id: "{{ trigger.to_state.attributes.chat_id | int }}"
+                      message: "✅ No hay ningún incidente activo para reconocer."
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ normalized_command in ['auto', '/auto', 'automatico', '/automatico'] }}
+            sequence:
+              - action: timer.cancel
+                target:
+                  entity_id: timer.security_camera_test_away
+              - action: input_select.select_option
+                target:
+                  entity_id: input_select.security_camera_control_mode
+                data:
+                  option: automatic
+              - action: script.security_camera_apply_alarm_policy
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ normalized_command in ['manual', '/manual'] }}
+            sequence:
+              - action: timer.cancel
+                target:
+                  entity_id: timer.security_camera_test_away
+              - action: input_select.select_option
+                target:
+                  entity_id: input_select.security_camera_manual_alarm_mode
+                data:
+                  option: "{{ states('input_select.security_camera_alarm_mode') }}"
+              - action: input_select.select_option
+                target:
+                  entity_id: input_select.security_camera_control_mode
+                data:
+                  option: manual
+              - action: telegram_bot.send_message
+                data:
+                  chat_id: "{{ trigger.to_state.attributes.chat_id | int }}"
+                  message: >-
+                    ✋ Control MANUAL activado. Se mantiene
+                    {{ states('input_select.security_camera_alarm_mode') }}
+                    hasta que elijas otro modo o envíes /auto.
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ normalized_command in ['away', '/away', 'fuera', '/fuera'] }}
+            sequence:
+              - action: timer.cancel
+                target:
+                  entity_id: timer.security_camera_test_away
+              - action: input_select.select_option
+                target:
+                  entity_id: input_select.security_camera_manual_alarm_mode
+                data:
+                  option: armed_away
+              - action: input_select.select_option
+                target:
+                  entity_id: input_select.security_camera_control_mode
+                data:
+                  option: manual
+              - action: script.security_camera_apply_alarm_policy
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ normalized_command in ['home', '/home', 'casa', '/casa'] }}
+            sequence:
+              - action: timer.cancel
+                target:
+                  entity_id: timer.security_camera_test_away
+              - action: input_select.select_option
+                target:
+                  entity_id: input_select.security_camera_manual_alarm_mode
+                data:
+                  option: armed_home
+              - action: input_select.select_option
+                target:
+                  entity_id: input_select.security_camera_control_mode
+                data:
+                  option: manual
+              - action: script.security_camera_apply_alarm_policy
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ normalized_command in ['arm', '/arm', 'armar', '/armar'] }}
+            sequence:
+              - action: timer.cancel
+                target:
+                  entity_id: timer.security_camera_test_away
+              - action: input_select.select_option
+                target:
+                  entity_id: input_select.security_camera_manual_alarm_mode
+                data:
+                  option: >-
+                    {{ 'armed_away' if states('zone.home') | int(0) == 0
+                       else 'armed_home' }}
+              - action: input_select.select_option
+                target:
+                  entity_id: input_select.security_camera_control_mode
+                data:
+                  option: manual
+              - action: script.security_camera_apply_alarm_policy
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ normalized_command in
+                     ['disarm', '/disarm', 'desarmar', '/desarmar'] }}
+            sequence:
+              - action: timer.cancel
+                target:
+                  entity_id: timer.security_camera_test_away
+              - action: input_select.select_option
+                target:
+                  entity_id: input_select.security_camera_manual_alarm_mode
+                data:
+                  option: disarmed
+              - action: input_select.select_option
+                target:
+                  entity_id: input_select.security_camera_control_mode
+                data:
+                  option: manual
+              - action: script.security_camera_apply_alarm_policy
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ normalized_command in ['testaway', '/testaway'] }}
+            sequence:
+              - action: timer.start
+                target:
+                  entity_id: timer.security_camera_test_away
+                data:
+                  duration: "00:15:00"
+              - action: input_select.select_option
+                target:
+                  entity_id: input_select.security_camera_alarm_mode
+                data:
+                  option: armed_away
+              - action: telegram_bot.send_message
+                data:
+                  chat_id: "{{ trigger.to_state.attributes.chat_id | int }}"
+                  message: >-
+                    🧪 Prueba ARMADA FUERA activa durante 15 minutos. La ubicación
+                    real del iPhone queda intacta. Cámaras y sensor interior activos.
+                    Enviá /testreal para terminar antes.
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ normalized_command in ['testreal', '/testreal'] }}
+            sequence:
+              - action: timer.cancel
+                target:
+                  entity_id: timer.security_camera_test_away
+              - action: script.security_camera_apply_alarm_policy
+              - action: telegram_bot.send_message
+                data:
+                  chat_id: "{{ trigger.to_state.attributes.chat_id | int }}"
+                  message: >-
+                    🧪 Simulación finalizada. La alarma vuelve a usar la
+                    ubicación real del iPhone.
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ normalized_command in ['resume', '/resume', 'unmute', '/unmute'] }}
+            sequence:
+              - action: script.security_camera_resume_notifications
+              - action: telegram_bot.send_message
+                data:
+                  chat_id: "{{ trigger.to_state.attributes.chat_id | int }}"
+                  message: "🔔 Notificaciones de cámaras reanudadas."
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ normalized_command in ['status', '/status'] }}
+            sequence:
+              - action: telegram_bot.send_message
+                data:
+                  chat_id: "{{ trigger.to_state.attributes.chat_id | int }}"
+                  message: >-
+                    ⚙️ Control: {{ states('input_select.security_camera_control_mode') | upper }}.
+                    {% if is_state('timer.security_camera_test_away', 'active') %}
+                      🧪 Alarma: ARMADA FUERA (PRUEBA, tiempo restante:
+                      {{ state_attr('timer.security_camera_test_away', 'remaining') }}).
+                    {% elif is_state('input_select.security_camera_alarm_mode', 'armed_away') %}
+                      🛡️ Alarma: ARMADA FUERA.
+                    {% elif is_state('input_select.security_camera_alarm_mode', 'armed_home') %}
+                      🛡️ Alarma: ARMADA EN CASA.
+                    {% else %}
+                      🔓 Alarma: DESARMADA.
+                    {% endif %}
+                    📶 Presencia Wi-Fi: {{ states('binary_sensor.security_camera_phone_wifi_presence') }}.
+                    📍 Presencia GPS: {{ states('zone.home') }}.
+                    {% if is_state('timer.security_camera_notification_pause', 'active') %}
+                      🔕 Notificaciones silenciadas. Tiempo restante:
+                      {{ state_attr('timer.security_camera_notification_pause', 'remaining') }}.
+                    {% elif is_state('input_boolean.security_camera_notifications_paused', 'on') %}
+                      🔕 Notificaciones silenciadas sin límite de tiempo.
+                    {% else %}
+                      🔔 Notificaciones activas.
+                    {% endif %}
+                    📷 Garaje: {% if is_state('input_boolean.security_camera_garage_incident_active', 'on') %}activo{% if is_state('input_boolean.security_camera_garage_incident_acknowledged', 'on') %}, reconocido{% else %}, esperando OK{% endif %}{% else %}sin actividad{% endif %}.
+                    🌳 Backyard: {% if is_state('input_boolean.security_camera_backyard_incident_active', 'on') %}activo{% if is_state('input_boolean.security_camera_backyard_incident_acknowledged', 'on') %}, reconocido{% else %}, esperando OK{% endif %}{% else %}sin actividad{% endif %}.
+                    🏠 Interior: {% if is_state('input_boolean.security_camera_interior_incident_active', 'on') %}activo{% if is_state('input_boolean.security_camera_interior_incident_acknowledged', 'on') %}, reconocido{% else %}, esperando OK{% endif %}{% elif is_state('input_select.security_camera_alarm_mode', 'armed_away') %}habilitado, sin actividad{% else %}ignorado en este modo{% endif %}.
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ normalized_command in ['until8', '/until8', 'hasta8', '/hasta8'] }}
+            sequence:
+              - action: script.security_camera_pause_until_8am
+              - action: telegram_bot.send_message
+                data:
+                  chat_id: "{{ trigger.to_state.attributes.chat_id | int }}"
+                  message: "🔕 Notificaciones silenciadas hasta las 08:00."
+          - conditions:
+              - condition: template
+                value_template: >-
+                  {{ duration_seconds | int > 0 and
+                     duration_seconds | int <= 2592000 }}
+            sequence:
+              - action: input_boolean.turn_on
+                target:
+                  entity_id: input_boolean.security_camera_notifications_paused
+              - action: timer.start
+                target:
+                  entity_id: timer.security_camera_notification_pause
+                data:
+                  duration: "{{ duration_seconds | int }}"
+              - action: telegram_bot.send_message
+                data:
+                  chat_id: "{{ trigger.to_state.attributes.chat_id | int }}"
+                  message: >-
+                    🔕 Notificaciones silenciadas por {{ normalized_command }}.
+                    Enviá /resume para reanudarlas antes.
+        default:
+          - action: telegram_bot.send_message
+            data:
+              chat_id: "{{ trigger.to_state.attributes.chat_id | int }}"
+              message: >-
+                Usá 10m, 1h o 1h30m para silenciar. También podés enviar
+                OK, /auto, /manual, /away, /home, /disarm, /status, /resume,
+                /until8, /testaway o /testreal. El máximo es 30 días.
+
+  - id: security_camera_alarm_mode_changed
+    alias: Cameras - announce and mirror active alarm mode
+    mode: queued
+    triggers:
+      - trigger: state
+        entity_id: input_select.security_camera_alarm_mode
+    actions:
+      - if:
+          - condition: state
+            entity_id: input_select.security_camera_alarm_mode
+            state: disarmed
+        then:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: input_boolean.security_camera_secure_mode
+        else:
+          - action: input_boolean.turn_on
+            target:
+              entity_id: input_boolean.security_camera_secure_mode
+      - action: telegram_bot.send_message
+        data:
+          message: >-
+            {% if trigger.to_state.state == 'armed_away' %}
+              🛡️ Alarma ARMADA FUERA. Cámaras exteriores y sensor interior activos.
+            {% elif trigger.to_state.state == 'armed_home' %}
+              🌙 Alarma ARMADA EN CASA. Solo cámaras exteriores; sensor interior ignorado.
+            {% else %}
+              🔓 Alarma DESARMADA. Las cámaras continuarán analizando eventos sin
+              enviar alertas y el sensor interior será ignorado.
+            {% endif %}
+            Control: {{ states('input_select.security_camera_control_mode') }}.
+
+  - id: security_camera_resume_after_pause
+    alias: Cameras - resume notifications after pause
+    triggers:
+      - trigger: event
+        event_type: timer.finished
+        event_data:
+          entity_id: timer.security_camera_notification_pause
+    actions:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.security_camera_notifications_paused
+
+  - id: security_camera_incident_timeout
+    alias: Cameras - close incident after one quiet minute
+    mode: queued
+    max: 10
+    triggers:
+      - trigger: event
+        event_type: timer.finished
+    actions:
+      - variables:
+          source: >-
+            {% set entity = trigger.event.data.entity_id %}
+            {% if entity == 'timer.security_camera_garage_incident_quiet' %}garage
+            {% elif entity == 'timer.security_camera_backyard_incident_quiet' %}backyard
+            {% elif entity == 'timer.security_camera_interior_incident_quiet' %}interior
+            {% else %}none{% endif %}
+      - condition: template
+        value_template: "{{ (source | trim) in ['garage', 'backyard', 'interior'] }}"
+      - action: input_boolean.turn_off
+        target:
+          entity_id:
+            - "input_boolean.security_camera_{{ source | trim }}_incident_active"
+            - "input_boolean.security_camera_{{ source | trim }}_incident_acknowledged"
+      - action: input_number.set_value
+        target:
+          entity_id: "input_number.security_camera_{{ source | trim }}_notification_count"
+        data:
+          value: 0
+
+  - id: security_camera_person_incidents
+    alias: Cameras - process person incidents
+    mode: queued
+    max: 100
+    triggers:
+      - trigger: mqtt
+        topic: security_cam/+/event
+    conditions:
+      - condition: template
+        alias: Ignore garage people confirmed in the public area
+        value_template: >-
+          {{ trigger.payload_json.camera_slug in ['garage', 'backyard'] and
+             trigger.payload_json.classification in ['private', 'uncertain', 'presence'] }}
+    variables:
+      camera_slug: "{{ trigger.payload_json.camera_slug }}"
+      active_entity: "input_boolean.security_camera_{{ camera_slug }}_incident_active"
+      ack_entity: "input_boolean.security_camera_{{ camera_slug }}_incident_acknowledged"
+      timer_entity: "timer.security_camera_{{ camera_slug }}_incident_quiet"
+      count_entity: "input_number.security_camera_{{ camera_slug }}_notification_count"
+      last_entity: "input_number.security_camera_{{ camera_slug }}_last_notification"
+      new_incident: "{{ not is_state(timer_entity, 'active') }}"
+      notification_count: "{{ states(count_entity) | int(0) }}"
+      last_notification: "{{ states(last_entity) | int(0) }}"
+      now_timestamp: "{{ as_timestamp(now()) | int }}"
+      alarm_profile: >-
+        {{ states('input_select.security_camera_alarm_mode') }}
+      minimum_interval: >-
+        {% if alarm_profile == 'armed_home' %}
+          {{ 30 if notification_count < 4 else 120 }}
+        {% elif alarm_profile == 'armed_away' %}
+          {{ 15 if notification_count < 3 else 60 if notification_count < 8 else 300 }}
+        {% else %}
+          999999
+        {% endif %}
+      should_notify: >-
+        {{ alarm_profile != 'disarmed' and
+           not is_state('input_boolean.security_camera_notifications_paused', 'on') and
+           (new_incident | bool or not is_state(ack_entity, 'on')) and
+           (new_incident | bool or
+             now_timestamp - last_notification >= minimum_interval | int) }}
+    actions:
+      - if:
+          - condition: template
+            value_template: "{{ new_incident | bool }}"
+        then:
+          - action: input_boolean.turn_on
+            target:
+              entity_id: "{{ active_entity }}"
+          - action: input_boolean.turn_off
+            target:
+              entity_id: "{{ ack_entity }}"
+          - action: input_number.set_value
+            target:
+              entity_id: "{{ count_entity }}"
+            data:
+              value: 0
+      - action: timer.start
+        target:
+          entity_id: "{{ timer_entity }}"
+        data:
+          duration: "00:01:00"
+      - if:
+          - condition: template
+            value_template: "{{ should_notify | bool }}"
+        then:
+          - variables:
+              event: "{{ trigger.payload_json }}"
+              snapshot_file: "/media/security-cam/{{ camera_slug }}.jpg"
+          - delay:
+              seconds: 1
+          - action: camera.snapshot
+            target:
+              entity_id: "{{ event.camera_entity_id }}"
+            data:
+              filename: "{{ snapshot_file }}"
+          - action: telegram_bot.send_photo
+            data:
+              file: "{{ snapshot_file }}"
+              inline_keyboard:
+                - "✅ OK:/ack_{{ camera_slug }}"
+              caption: >-
+                {% if alarm_profile == 'armed_home' %}
+                  🚨 ALARMA EN CASA · {{ event.camera }} · {{ event.classification }} ·
+                  personas={{ event.persons }}. Respondé OK para reconocer este incidente.
+                {% else %}
+                  🚨 ALARMA FUERA · {{ event.camera }} · {{ event.classification }} ·
+                  personas={{ event.persons }}. Respondé OK para reconocer este incidente.
+                {% endif %}
+          - action: input_number.set_value
+            target:
+              entity_id: "{{ count_entity }}"
+            data:
+              value: "{{ notification_count + 1 }}"
+          - action: input_number.set_value
+            target:
+              entity_id: "{{ last_entity }}"
+            data:
+              value: "{{ now_timestamp }}"
+          - action: input_text.set_value
+            target:
+              entity_id: input_text.security_camera_last_incident_source
+            data:
+              value: "{{ camera_slug }}"
+
+  - id: security_camera_interior_presence_incident
+    alias: Cameras - interior presence while armed away
+    mode: queued
+    max: 50
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.sensor_de_presencia_humana_motion
+        from: "off"
+        to: "on"
+      - trigger: state
+        entity_id: input_select.security_camera_alarm_mode
+        to: armed_away
+    conditions:
+      - condition: state
+        entity_id: input_select.security_camera_alarm_mode
+        state: armed_away
+      - condition: state
+        entity_id: binary_sensor.sensor_de_presencia_humana_motion
+        state: "on"
+    variables:
+      new_incident: "{{ not is_state('timer.security_camera_interior_incident_quiet', 'active') }}"
+      notification_count: "{{ states('input_number.security_camera_interior_notification_count') | int(0) }}"
+      last_notification: "{{ states('input_number.security_camera_interior_last_notification') | int(0) }}"
+      now_timestamp: "{{ as_timestamp(now()) | int }}"
+      minimum_interval: "{{ 15 if notification_count < 3 else 60 if notification_count < 8 else 300 }}"
+      should_notify: >-
+        {{ not is_state('input_boolean.security_camera_notifications_paused', 'on') and
+           (new_incident | bool or
+             (not is_state('input_boolean.security_camera_interior_incident_acknowledged', 'on') and
+              now_timestamp - last_notification >= minimum_interval | int)) }}
+    actions:
+      - if:
+          - condition: template
+            value_template: "{{ new_incident | bool }}"
+        then:
+          - action: input_boolean.turn_on
+            target:
+              entity_id: input_boolean.security_camera_interior_incident_active
+          - action: input_boolean.turn_off
+            target:
+              entity_id: input_boolean.security_camera_interior_incident_acknowledged
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.security_camera_interior_notification_count
+            data:
+              value: 0
+      - action: timer.start
+        target:
+          entity_id: timer.security_camera_interior_incident_quiet
+        data:
+          duration: "00:01:00"
+      - if:
+          - condition: template
+            value_template: "{{ should_notify | bool }}"
+        then:
+          - action: telegram_bot.send_message
+            data:
+              message: >-
+                🚨 ALARMA FUERA · Movimiento detectado por el sensor interior.
+                Respondé OK para reconocer este incidente.
+              inline_keyboard:
+                - "✅ OK:/ack_interior"
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.security_camera_interior_notification_count
+            data:
+              value: "{{ notification_count + 1 }}"
+          - action: input_number.set_value
+            target:
+              entity_id: input_number.security_camera_interior_last_notification
+            data:
+              value: "{{ now_timestamp }}"
+          - action: input_text.set_value
+            target:
+              entity_id: input_text.security_camera_last_incident_source
+            data:
+              value: interior
+
+  - id: security_camera_alarm_policy_controller
+    alias: Cameras - apply automatic or manual alarm policy
+    mode: restart
+    triggers:
+      - trigger: homeassistant
+        event: start
+      - trigger: state
+        entity_id: zone.home
+      - trigger: state
+        entity_id: binary_sensor.security_camera_phone_wifi_presence
+        to: "on"
+      - trigger: state
+        entity_id: binary_sensor.security_camera_phone_wifi_presence
+        to: "off"
+        for: "00:05:00"
+      - trigger: state
+        entity_id:
+          - input_select.security_camera_control_mode
+          - input_select.security_camera_manual_alarm_mode
+      - trigger: time
+        at: "08:30:00"
+      - trigger: time
+        at: "23:00:00"
+    conditions:
+      - condition: template
+        value_template: >-
+          {{ not is_state('timer.security_camera_test_away', 'active') }}
+    actions:
+      - action: script.security_camera_apply_alarm_policy
+
+  - id: security_camera_test_away_finished
+    alias: Cameras - finish simulated away mode
+    mode: single
+    triggers:
+      - trigger: event
+        event_type: timer.finished
+        event_data:
+          entity_id: timer.security_camera_test_away
+    actions:
+      - action: script.security_camera_apply_alarm_policy
+      - action: telegram_bot.send_message
+        data:
+          message: >-
+            🧪 Finalizó la prueba ARMADA FUERA. Se restauró la política
+            {{ states('input_select.security_camera_control_mode') }} y el modo
+            activo es {{ states('input_select.security_camera_alarm_mode') }}.

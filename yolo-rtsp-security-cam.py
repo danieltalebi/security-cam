@@ -14,11 +14,11 @@ import numpy as np
 import json
 import subprocess
 from datetime import datetime
-from urllib.parse import urlparse
 from ffmpeg import FFmpeg
 from skimage.metrics import mean_squared_error as ssim
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter, BooleanOptionalAction
 from sshkeyboard import listen_keyboard, stop_listening
+from camera_config import credentials, dvrip_endpoint, expand_host, rtsp_url
 
 # Parse command line arguments
 parser = ArgumentParser(formatter_class=ArgumentDefaultsHelpFormatter)
@@ -37,9 +37,6 @@ parser.add_argument("--smart_config", type=str, default=None, help="JSON configu
 parser.add_argument("--dataset_dir", type=str, default=None, help="Directory for manually saved clean PTZ samples. With --monitor, press C to save the current PTZ view for classifier training.")
 parser.add_argument("--dvrip_events", default=None, action=BooleanOptionalAction, help="Use camera DVRIP human-detection events to activate short RTSP analysis windows.")
 args = vars(parser.parse_args())
-
-if not args["stream"]:
-    parser.error("provide --stream or set CAMERA_GARAGE_RTSP_URL")
 
 rtsp_stream = args["stream"]
 monitor = args["monitor"]
@@ -79,6 +76,14 @@ if args["smart_config"]:
     from smart_monitor import SmartMonitor
     with open(args["smart_config"], encoding="utf-8") as smart_config_file:
         smart_config = json.load(smart_config_file)
+    if rtsp_stream:
+        rtsp_stream = expand_host(rtsp_stream, smart_config)
+    else:
+        rtsp_stream = rtsp_url(smart_config)
+    if smart_config.get("onvif", {}).get("device_service"):
+        smart_config["onvif"]["device_service"] = expand_host(
+            smart_config["onvif"]["device_service"], smart_config,
+        )
     smart_monitor = SmartMonitor(smart_config)
     smart_detection_interval = float(smart_config.get("detection", {}).get("interval_seconds", 0.25))
     if smart_config.get("onvif", {}).get("enabled", False):
@@ -100,6 +105,8 @@ if dataset_dir and not monitor:
     parser.error("--dataset_dir requires --monitor so you can save samples with the C key")
 if dataset_dir and not smart_monitor:
     parser.error("--dataset_dir requires --smart_config so the PTZ portion of the combined stream is known")
+if not rtsp_stream:
+    parser.error("provide --stream or set CAMERA_<NAME>_RTSP_URL")
 if dvrip_event_mode and not smart_monitor:
     parser.error("--dvrip_events requires --smart_config with DVRIP settings")
 
@@ -286,13 +293,8 @@ if ptz_poller:
 
 if dvrip_event_mode:
     from dvrip_events import DVRIPAlarmListener
-    endpoint = urlparse(smart_config["onvif"]["device_service"])
-    dvrip_host = dvrip_config.get("host", endpoint.hostname)
-    dvrip_port = int(dvrip_config.get("port", 34567))
-    dvrip_username = os.environ.get(dvrip_config.get("username_env", "CAMERA_DVRIP_USER")) or os.environ.get(smart_config["onvif"].get("username_env", "CAMERA_ONVIF_USER"))
-    dvrip_password = os.environ.get(dvrip_config.get("password_env", "CAMERA_DVRIP_PASSWORD")) or os.environ.get(smart_config["onvif"].get("password_env", "CAMERA_ONVIF_PASSWORD"))
-    if not dvrip_host or not dvrip_username or not dvrip_password:
-        parser.error("DVRIP events require the credential variables named in smart-monitor.json")
+    dvrip_host, dvrip_port = dvrip_endpoint(smart_config)
+    dvrip_username, dvrip_password = credentials(smart_config)
     dvrip_listener = DVRIPAlarmListener(
         dvrip_host, dvrip_port, dvrip_username, dvrip_password,
         on_event=activate_event_analysis,

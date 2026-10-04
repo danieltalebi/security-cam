@@ -1,4 +1,41 @@
 {
+  "outputs": {
+    "mode": "mqtt"
+  },
+  "home_assistant": {
+    "mqtt": {
+      "host_env": "HA_MQTT_HOST",
+      "port_env": "HA_MQTT_PORT",
+      "username_env": "HA_MQTT_USER",
+      "password_env": "HA_MQTT_PASSWORD",
+      "topic_prefix": "security_cam",
+      "discovery_prefix": "homeassistant",
+      "qos": 1,
+      "tls": false
+    }
+  },
+  "presence": {
+    "enabled": false,
+    "poll_interval_seconds": 30,
+    "sources": [
+      {
+        "type": "asuswrt",
+        "name": "asus",
+        "host": "192.168.50.1",
+        "username_env": "ASUS_ROUTER_USER",
+        "password_env": "ASUS_ROUTER_PASSWORD",
+        "macs": ["00:00:00:00:00:00"]
+      },
+      {
+        "type": "huawei",
+        "name": "huawei",
+        "host": "192.168.100.1",
+        "username_env": "HUAWEI_ROUTER_USER",
+        "password_env": "HUAWEI_ROUTER_PASSWORD",
+        "macs": ["00:00:00:00:00:00"]
+      }
+    ]
+  },
   "cameras": [
     {
       "name": "garage",

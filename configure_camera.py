@@ -49,44 +49,48 @@ def load_json(path: Path, fallback: dict) -> dict:
 
 def main() -> None:
     print("\nAdd security camera\n")
+    multi_path = ROOT / "multi-camera.json"
+    multi = load_json(multi_path, {"cameras": []})
+    output_mode = str(multi.get("outputs", {}).get("mode", "telegram")).lower()
     name = prompt("Camera name (for example garage or back patio)")
     key = slug(name)
     filename = f"{name.strip().lower().replace(' ', '-')}-monitor.json"
     mode = prompt("Mode: property (private/public classifier) or presence (any person alerts)", "presence").lower()
     if mode not in {"property", "presence"}:
         raise RuntimeError("Mode must be property or presence.")
-    host = prompt("Camera IP address")
+    host = prompt("Camera hostname or reserved IP address")
     username = prompt("Camera username")
     password = prompt("Camera password", secret=True)
     rtsp = prompt("Complete RTSP URL", required=mode == "property")
     snapshot = prompt("JPEG snapshot URL", f"http://{host}/webcapture.jpg?command=snap&channel=0")
-    bot_token = prompt("Telegram bot token (leave blank to keep existing)", secret=True, required=False)
-    chat_id = prompt("Telegram chat ID (leave blank to keep existing)", required=False)
+    bot_token = ""
+    chat_id = ""
+    if output_mode in {"telegram", "both"}:
+        bot_token = prompt("Telegram bot token (leave blank to keep existing)", secret=True, required=False)
+        chat_id = prompt("Telegram chat ID (leave blank to keep existing)", required=False)
 
     template_name = "smart-monitor.example.json" if mode == "property" else "backyard-monitor.example.json"
     config = load_json(ROOT / template_name, {})
     prefix = f"CAMERA_{key}"
-    config["camera"] = {"name": name, "credential_prefix": prefix}
+    config["camera"] = {"name": name, "credential_prefix": prefix, "host": host}
     if mode == "property":
         config["camera"]["rtsp_env"] = f"{prefix}_RTSP_URL"
-    config["onvif"]["device_service"] = f"http://{host}:8899/onvif/device_service"
-    config["dvrip"]["host"] = host
-    config["snapshot"]["url"] = snapshot
+    config["onvif"]["device_service"] = "http://{host}:8899/onvif/device_service"
+    config["dvrip"]["host"] = "{host}"
+    config["snapshot"]["url"] = snapshot.replace(host, "{host}", 1)
     config["snapshot"]["review_dir"] = f"events/review/{name.strip().lower().replace(' ', '-') }"
     target = ROOT / filename
     target.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
-    multi_path = ROOT / "multi-camera.json"
-    multi = load_json(multi_path, {"cameras": []})
     entry = {"name": name, "mode": mode, "config": filename}
     cameras = [item for item in multi.get("cameras", []) if item.get("name", "").lower() != name.lower()]
     cameras.append(entry)
     multi["cameras"] = cameras
     multi_path.write_text(json.dumps(multi, indent=2) + "\n", encoding="utf-8")
 
-    values = {f"{prefix}_USER": username, f"{prefix}_PASSWORD": password}
+    values = {f"{prefix}_USER": username, f"{prefix}_PASSWORD": password, f"{prefix}_HOST": host}
     if rtsp:
-        values[f"{prefix}_RTSP_URL"] = rtsp
+        values[f"{prefix}_RTSP_URL"] = rtsp.replace(host, "{host}", 1)
     if bot_token:
         values["TELEGRAM_BOT_TOKEN"] = bot_token
     if chat_id:

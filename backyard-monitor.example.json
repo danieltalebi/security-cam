@@ -1,18 +1,20 @@
 {
   "camera": {
     "name": "backyard",
-    "credential_prefix": "CAMERA_BACKYARD"
+    "credential_prefix": "CAMERA_BACKYARD",
+    "host": "backyard-camera.local"
   },
   "onvif": {
-    "device_service": "http://BACKYARD_CAMERA_IP:8899/onvif/device_service"
+    "device_service": "http://{host}:8899/onvif/device_service"
   },
   "dvrip": {
-    "host": "BACKYARD_CAMERA_IP",
+    "host": "{host}",
     "port": 34567,
+    "event_debounce_seconds": 3,
     "notification_cooldown_seconds": 40
   },
   "snapshot": {
-    "url": "http://BACKYARD_CAMERA_IP/webcapture.jpg?command=snap&channel=0",
+    "url": "http://{host}/webcapture.jpg?command=snap&channel=0",
     "xmeye_query_auth": true,
     "review_dir": "events/review/backyard"
   },

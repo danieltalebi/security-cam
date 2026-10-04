@@ -1,0 +1,11 @@
+# Add this top-level block to configuration.yaml.
+lovelace:
+  mode: storage
+  dashboards:
+    security-cameras:
+      mode: yaml
+      title: Security Cameras
+      icon: mdi:shield-home
+      show_in_sidebar: true
+      require_admin: false
+      filename: dashboards/security_cam_dashboard.yaml

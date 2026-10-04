@@ -65,6 +65,122 @@ To pause Telegram alerts, send the bot a duration such as `10m`, `1h`, or `1h30m
 
 Camera connectivity is monitored through the DVRIP event connection. If a camera remains offline, Telegram sends alerts after 5, 30, and 60 minutes. Once an outage has produced an alert, another message is sent when that camera reconnects. Each outage produces at most those three offline alerts.
 
+#### Home Assistant via MQTT
+
+MQTT is the recommended notification backend. The camera process remains responsible for DVRIP listening, snapshots, YOLO confirmation, and the garage `private`/`public`/`uncertain` classification. Home Assistant receives the final classification and decides whether a notification should be sent.
+
+1. Install the Mosquitto Broker app and MQTT integration in Home Assistant.
+2. Create a dedicated broker user for this application.
+3. On Windows, run `setup_home_assistant_windows.bat`. On other systems, start from `multi-camera.example.json` and leave `outputs.mode` set to `mqtt`. Use `both` temporarily if direct Telegram alerts should remain enabled during migration, or `telegram` for the old behavior.
+4. Set these variables on the computer running the camera monitor:
+
+```text
+HA_MQTT_HOST=homeassistant.local
+HA_MQTT_PORT=1883
+HA_MQTT_USER=security_cam
+HA_MQTT_PASSWORD=...
+```
+
+Using a DNS name for `HA_MQTT_HOST` means that moving Home Assistant to another VM only requires updating DNS. Otherwise, change this one variable. Camera images and event entities are added automatically through MQTT discovery.
+
+Copy `home-assistant/security_cam_package.yaml` into the Home Assistant packages directory. The package:
+
+- exposes disarmed, armed-home, and armed-away notification behavior;
+- provides persistent automatic and manual alarm control;
+- in automatic control, arms away whenever nobody is home, disarms from 08:30 to 23:00 while somebody is home, and arms home from 23:00 to 08:30;
+- in manual control, preserves the selected disarmed, armed-home, or armed-away mode regardless of time and occupancy;
+- never notifies for a garage result confirmed as `public`;
+- groups qualifying detections from each camera into one incident that closes after 60 seconds without another detection;
+- repeats armed incident alerts with progressive backoff until that incident is acknowledged;
+- enables the interior presence sensor only while armed and nobody is home;
+- provides 15-minute, one-hour, indefinite-pause, and resume scripts;
+- keeps detection and local evidence capture running while notifications are paused.
+
+`home-assistant/security_cam_dashboard.yaml` is a built-in Lovelace dashboard
+for controlling automatic/manual modes, arming, notification pauses, incident
+acknowledgement, camera snapshots, presence, and diagnostics. It uses no custom
+frontend cards.
+
+#### Router-backed presence
+
+The monitor can publish `binary_sensor.security_camera_phone_wifi_presence` by
+checking the active-client tables of multiple routers. Devices are matched by
+MAC address; DHCP addresses are diagnostic only and may change freely. Presence
+is `on` when any router reports a configured MAC. It is `off` only when every
+configured router answered successfully and none reported a match. If one
+router cannot be checked, the sensor becomes unavailable so an outage cannot
+arm the alarm by mistake.
+
+Configure a `presence` section in `multi-camera.json` using
+`multi-camera.example.json` as the template. Keep router credentials out of the
+JSON and provide them through these environment variables:
+
+```text
+ASUS_ROUTER_USER=...
+ASUS_ROUTER_PASSWORD=...
+HUAWEI_ROUTER_USER=...
+HUAWEI_ROUTER_PASSWORD=...
+```
+
+On macOS, double-click `configure_router_presence.command` instead. It asks for
+both router logins, hides password input, and stores the four values in the
+current user's macOS Keychain. `router_presence.py` checks environment variables
+first and then the Keychain, so the credentials survive reboots without being
+written to this repository.
+
+#### macOS background service and menu bar controls
+
+Double-click `install_macos_service.command` once to install the camera monitor
+as a per-user LaunchAgent. It starts automatically when the user logs in and is
+restarted by macOS after an unexpected failure. The installer also adds a native
+camera icon to the menu bar with **Start**, **Restart**, **Stop**, and **Open
+Logs** actions. Logs are stored in `~/Library/Logs/security-cam`; the monitor
+continues running when Terminal is closed. Run the installer again after moving
+this repository so the LaunchAgent receives the new absolute path. On macOS,
+camera credentials and RTSP URLs may also be stored as Keychain items named
+`security-cam-<VARIABLE_NAME>`; the monitor checks those after environment
+variables, which makes them available to LaunchAgents without plaintext files.
+
+The supported router readers are `asuswrt` and the Huawei HG8245 family web
+interface. Private Wi-Fi addresses on an iPhone should be set to `Fixed` for
+each home SSID, and every resulting MAC should be listed under the appropriate
+router. The Home Assistant package waits for five continuous minutes of
+router-confirmed absence before applying `armed_away`; reconnection to either
+router restores the time-appropriate home mode immediately. GPS is displayed
+for diagnostics but no longer overrides router-confirmed presence.
+
+Create `/media/security-cam` on the Home Assistant host and allow `/media` in `configuration.yaml` if it is not already allowed:
+
+```yaml
+homeassistant:
+  packages: !include_dir_named packages
+  allowlist_external_dirs:
+    - /media
+```
+
+Configure the Home Assistant Telegram Bot integration before enabling the automation. The package uses the first configured Telegram chat by default. Use the `Polling` platform when Telegram should also control the alarm; `Broadcast` can only send alerts. Send `/auto` to enable the occupancy/time policy. Send `/manual` to freeze the current mode, or select a persistent manual mode with `/away`, `/home`, or `/disarm`. The legacy `/arm` command chooses armed-away when nobody is home and armed-home otherwise, and switches to manual control. Use `10m`, `1h`, or `1h30m` to pause notifications, `/status` to inspect the controller, active mode, and incidents, `/resume` to resume immediately, or `/until8` to pause until 08:00. Reply with the plain word `OK`, or press an alert's inline `OK` button, to acknowledge the most recently notified active incident without disarming the system. Each incident becomes new again only after 60 seconds without a qualifying detection. Telegram also reports every active alarm-mode change. These status messages are still delivered while camera detection alerts are paused. Do not run two polling consumers for the same bot when using the temporary `both` output mode.
+
+#### Camera addresses that survive router restarts
+
+The most reliable fix for changing camera IP addresses is a DHCP reservation in the router for each camera MAC address. A local DNS name such as `garage-camera.local` also works if the camera/router reliably advertises it.
+
+Each camera now has one canonical `camera.host` value. DVRIP, ONVIF, snapshot, and RTSP values may contain `{host}`, for example:
+
+```json
+{
+  "camera": {
+    "name": "garage",
+    "credential_prefix": "CAMERA_GARAGE",
+    "host": "garage-camera.local",
+    "rtsp_url": "rtsp://user:password@{host}:554/main"
+  },
+  "dvrip": {"host": "{host}", "port": 34567},
+  "snapshot": {"url": "http://{host}/webcapture.jpg?command=snap&channel=0"}
+}
+```
+
+`CAMERA_GARAGE_HOST` overrides the JSON value, so a changed address can be corrected once without editing every endpoint. Hostnames are resolved again whenever DVRIP reconnects. Automatic subnet scanning is intentionally not used because model names and open ports are not reliable camera identities; a DHCP reservation is deterministic and avoids connecting to the wrong device.
+
 To add another camera later, run `setup_camera_windows.bat` again. Run `diagnose_cameras_windows.bat` first to check every DVRIP connection and JPEG snapshot; add `--telegram` after it in a Command Prompt if you also want Telegram test messages.
 
 ## Running the App
