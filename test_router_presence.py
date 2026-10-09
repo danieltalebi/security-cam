@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from router_presence import (
     AsusRouterSource,
@@ -176,6 +176,83 @@ class RouterPresenceTests(unittest.TestCase):
             PresenceObservation("asus", True, False),
             PresenceObservation("huawei", False),
         ]), "unavailable")
+
+    def test_logs_only_phone_and_router_state_changes(self):
+        monitor = object.__new__(RouterPresenceMonitor)
+        monitor.notify = MagicMock()
+        monitor.devices = {
+            "Daniel iPhone": {"11:22:33:44:55:66"},
+            "Second iPhone": {"aa:bb:cc:dd:ee:ff"},
+        }
+        monitor._last_sources = None
+        monitor._source_offline_since = {}
+        monitor._last_devices = None
+        monitor._last_state = None
+        online = [
+            PresenceObservation(
+                "asus", True, True, matched_macs=("11:22:33:44:55:66",),
+            ),
+            PresenceObservation("huawei", True, False),
+        ]
+
+        with patch("builtins.print") as log:
+            monitor._report_transitions("home", online, 1000)
+            initial_count = log.call_count
+            monitor._report_transitions("home", online, 1030)
+            self.assertEqual(log.call_count, initial_count)
+
+            disconnected = [
+                PresenceObservation("asus", True, False),
+                PresenceObservation("huawei", True, False),
+            ]
+            monitor._report_transitions("away", disconnected, 1060)
+
+        lines = [str(call.args[0]) for call in log.call_args_list]
+        self.assertTrue(any("Daniel iPhone disconnected" in line for line in lines))
+        self.assertTrue(any("All configured iPhones are offline" in line for line in lines))
+
+    def test_router_outage_and_recovery_send_telegram_transitions(self):
+        monitor = object.__new__(RouterPresenceMonitor)
+        monitor.notify = MagicMock()
+        monitor.devices = {}
+        monitor._last_sources = {"asus": True, "huawei": True}
+        monitor._source_offline_since = {}
+        monitor._last_devices = {}
+        monitor._last_state = "home"
+
+        monitor._report_transitions(
+            "home",
+            [PresenceObservation("asus", False), PresenceObservation("huawei", True, True)],
+            1000,
+        )
+        monitor._report_transitions(
+            "home",
+            [PresenceObservation("asus", True, True), PresenceObservation("huawei", True, True)],
+            1090,
+        )
+
+        messages = [call.args[0] for call in monitor.notify.call_args_list]
+        self.assertTrue(any("cannot be contacted" in item for item in messages))
+        self.assertTrue(any("1m 30s" in item for item in messages))
+
+    def test_phone_is_not_marked_disconnected_while_one_router_is_unavailable(self):
+        monitor = object.__new__(RouterPresenceMonitor)
+        monitor.notify = MagicMock()
+        monitor.devices = {"Daniel iPhone": {"11:22:33:44:55:66"}}
+        monitor._last_sources = {"asus": True, "huawei": True}
+        monitor._source_offline_since = {}
+        monitor._last_devices = {"Daniel iPhone": True}
+        monitor._last_state = "home"
+
+        with patch("builtins.print") as log:
+            monitor._report_transitions(
+                "unavailable",
+                [PresenceObservation("asus", False), PresenceObservation("huawei", True, False)],
+                1000,
+            )
+
+        lines = [str(call.args[0]) for call in log.call_args_list]
+        self.assertFalse(any("Daniel iPhone disconnected" in line for line in lines))
 
 
 if __name__ == "__main__":

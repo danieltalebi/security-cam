@@ -226,6 +226,39 @@ def load_config(path: Path) -> dict:
         ) from None
 
 
+def technical_notifier(multi: dict, multi_path: Path) -> TelegramNotifier | None:
+    """Create an unmuted channel for health alerts even in MQTT-only mode."""
+    telegram_configs = []
+    for entry in multi.get("cameras", []):
+        try:
+            config = load_config((multi_path.parent / entry["config"]).resolve())
+            telegram = config["telegram"]
+            identity = (telegram.get("token_env"), telegram.get("chat_id_env"))
+            if identity not in {
+                (item.get("token_env"), item.get("chat_id_env"))
+                for item in telegram_configs
+            }:
+                telegram_configs.append(telegram)
+        except (KeyError, OSError):
+            continue
+    last_error: Exception | None = None
+    # A login LaunchAgent can start a moment before the user's Keychain is
+    # ready. Brief retries avoid silently losing all health notifications.
+    for attempt in range(3):
+        for telegram in telegram_configs:
+            try:
+                return TelegramNotifier(
+                    required_env(telegram["token_env"]), required_env(telegram["chat_id_env"]),
+                )
+            except RuntimeError as error:
+                last_error = error
+        if attempt < 2:
+            time.sleep(1)
+    if last_error:
+        print(f"Technical Telegram notifier unavailable: {type(last_error).__name__}: {last_error}")
+    return None
+
+
 def main() -> None:
     install_timestamped_logging()
     from dvrip_smart_telegram import SmartAlarm, load_windows_user_environment
@@ -243,6 +276,22 @@ def main() -> None:
         raise RuntimeError("outputs.mode must be telegram, mqtt, or both.")
     home_assistant = None
     presence_monitor = None
+    internet_monitor = None
+    system_notifier = technical_notifier(multi, multi_path)
+    health_config = multi.get("health", {})
+    camera_thresholds = tuple(
+        float(value)
+        for value in health_config.get("camera_offline_alert_seconds", [60, 300, 1800])
+    )
+    if system_notifier and health_config.get("internet_enabled", True):
+        from internet_connectivity import InternetConnectivityMonitor
+
+        internet_monitor = InternetConnectivityMonitor(
+            system_notifier.send_message,
+            interval_seconds=float(health_config.get("internet_poll_seconds", 30)),
+            timeout_seconds=float(health_config.get("internet_timeout_seconds", 5)),
+            failure_threshold=int(health_config.get("internet_failure_threshold", 2)),
+        ).start()
     if output_mode in {"mqtt", "both"}:
         from home_assistant_mqtt import HomeAssistantMQTT
 
@@ -259,6 +308,7 @@ def main() -> None:
 
         presence_monitor = RouterPresenceMonitor(
             presence_config, home_assistant.publish_presence,
+            notify=system_notifier.send_message if system_notifier else None,
         ).start()
 
     for entry in multi.get("cameras", []):
@@ -292,7 +342,9 @@ def main() -> None:
             handler = alarm.handle_event
         else:
             raise RuntimeError(f"{name}: unsupported mode {mode!r}.")
-        connectivity = CameraConnectivityAlerts(name, notifier) if notifier else None
+        connectivity = CameraConnectivityAlerts(
+            name, system_notifier, thresholds=camera_thresholds, bypass_mute=True,
+        ) if system_notifier else None
 
         def set_connectivity(online: bool, camera=name, alerts=connectivity) -> None:
             if alerts:
@@ -334,6 +386,8 @@ def main() -> None:
             connectivity.stop()
         if presence_monitor:
             presence_monitor.stop()
+        if internet_monitor:
+            internet_monitor.stop()
         if home_assistant:
             home_assistant.stop()
         signal.signal(signal.SIGTERM, previous_sigterm)

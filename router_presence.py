@@ -16,6 +16,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable
@@ -158,6 +159,7 @@ class PresenceObservation:
     available: bool
     present: bool = False
     detail: str = ""
+    matched_macs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -236,6 +238,7 @@ class RouterSource:
             return PresenceObservation(
                 self.name, True, bool(matches),
                 "matched " + ", ".join(matches) if matches else "no configured MAC online",
+                tuple(matches),
             )
         except (HTTPError, URLError, TimeoutError, OSError, PermissionError, ValueError) as error:
             return PresenceObservation(self.name, False, detail=f"{type(error).__name__}: {error}")
@@ -363,9 +366,11 @@ class RouterPresenceMonitor:
         self,
         config: dict,
         publish: Callable[[str, dict], None],
+        notify: Callable[[str], object] | None = None,
     ):
         self.interval = max(10.0, float(config.get("poll_interval_seconds", 30)))
         self.publish = publish
+        self.notify = notify
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         self.sources: list[RouterSource] = []
@@ -389,6 +394,34 @@ class RouterPresenceMonitor:
         if not self.sources:
             raise ValueError("Configure at least one router presence source")
         self.sources_by_name = {source.name: source for source in self.sources}
+        self.devices = self._configured_devices(config)
+        self._last_sources: dict[str, bool] | None = None
+        self._source_offline_since: dict[str, float] = {}
+        self._last_devices: dict[str, bool] | None = None
+        self._last_state: str | None = None
+
+    def _configured_devices(self, config: dict) -> dict[str, set[str]]:
+        devices: dict[str, set[str]] = {}
+        for item in config.get("devices", []):
+            name = str(item.get("name", "")).strip()
+            macs = {normalize_mac(value) for value in item.get("macs", [])}
+            if name and macs:
+                devices[name] = macs
+        if devices:
+            return devices
+        all_macs = sorted({mac for source in self.sources for mac in source.macs})
+        return {
+            f"iPhone …{mac[-5:].upper()}": {mac}
+            for mac in all_macs
+        }
+
+    def _notify(self, text: str) -> None:
+        if self.notify is None:
+            return
+        try:
+            self.notify(text)
+        except Exception as error:
+            print(f"Telegram router health alert failed: {type(error).__name__}: {error}")
 
     def start(self) -> "RouterPresenceMonitor":
         self.thread = threading.Thread(target=self._run, name="router-presence", daemon=True)
@@ -420,7 +453,87 @@ class RouterPresenceMonitor:
             },
         }
         self.publish(state, attributes)
+        self._report_transitions(state, observations)
         return state, attributes
+
+    def _report_transitions(
+        self, state: str, observations: list[PresenceObservation], now: float | None = None,
+    ) -> None:
+        now = time.time() if now is None else now
+        sources = {item.name: item.available for item in observations}
+        matched = {
+            mac
+            for item in observations if item.available
+            for mac in item.matched_macs
+        }
+        any_source_available = any(sources.values())
+        all_sources_available = bool(sources) and all(sources.values())
+        devices = {
+            name: True if macs & matched else False if all_sources_available else None
+            for name, macs in self.devices.items()
+        }
+
+        if self._last_sources is None:
+            source_summary = ", ".join(
+                f"{name}={'online' if available else 'offline'}"
+                for name, available in sources.items()
+            )
+            device_summary = ", ".join(
+                f"{name}={'connected' if present is True else 'disconnected' if present is False else 'unknown'}"
+                for name, present in devices.items()
+            ) or "no configured iPhones"
+            print(f"Router presence initialized: {source_summary}; {device_summary}")
+            print(f"Wi-Fi presence: {state} (initial)")
+            for name, available in sources.items():
+                if not available:
+                    self._source_offline_since[name] = now
+                    self._notify(f"⚠️ Router {name} cannot be contacted.")
+        else:
+            for name, available in sources.items():
+                previous = self._last_sources.get(name)
+                if previous == available:
+                    continue
+                if available:
+                    duration = now - self._source_offline_since.pop(name, now)
+                    message = f"✅ Router {name} is reachable again after {format_elapsed(duration)} offline."
+                else:
+                    self._source_offline_since[name] = now
+                    message = f"⚠️ Router {name} cannot be contacted."
+                print(message)
+                self._notify(message)
+
+            if any_source_available and self._last_devices is not None:
+                for name, present in devices.items():
+                    if present is None:
+                        continue
+                    previous = self._last_devices.get(name)
+                    if previous is None or previous == present:
+                        continue
+                    print(f"{name} {'connected to Wi-Fi' if present else 'disconnected from Wi-Fi'}")
+                if (
+                    devices and all(present is False for present in devices.values())
+                    and any(self._last_devices.values())
+                ):
+                    print("All configured iPhones are offline")
+
+        if self._last_state is not None and state != self._last_state:
+            print(f"Wi-Fi presence: {state} (changed from {self._last_state})")
+            if state == "unavailable":
+                self._notify("⚠️ Neither configured router can be contacted; presence is unavailable.")
+            elif self._last_state == "unavailable":
+                self._notify(f"✅ Router presence is available again; current state: {state}.")
+
+        self._last_sources = sources
+        if any_source_available:
+            known_devices = {
+                name: present for name, present in devices.items()
+                if present is not None
+            }
+            if self._last_devices is None:
+                self._last_devices = known_devices
+            else:
+                self._last_devices.update(known_devices)
+        self._last_state = state
 
     def _retry_discovered_asus(
         self, source: AsusRouterSource, original: PresenceObservation,
@@ -457,6 +570,7 @@ class RouterPresenceMonitor:
                 return PresenceObservation(
                     retried.name, True, retried.present,
                     detail=f"{retried.detail}; discovered via {upstream.name} at {client.ip}",
+                    matched_macs=retried.matched_macs,
                 )
             failures.append(client.ip)
         return PresenceObservation(
@@ -466,10 +580,16 @@ class RouterPresenceMonitor:
 
     def _run(self) -> None:
         while not self.stop_event.is_set():
-            state, attributes = self.poll_once()
-            summary = ", ".join(
-                f"{name}={'home' if data['present'] else 'away' if data['available'] else 'unavailable'}"
-                for name, data in attributes["sources"].items()
-            )
-            print(f"Wi-Fi presence: {state} ({summary})")
+            self.poll_once()
             self.stop_event.wait(self.interval)
+
+
+def format_elapsed(seconds: float) -> str:
+    remaining = max(0, int(seconds + 0.999))
+    hours, remaining = divmod(remaining, 3600)
+    minutes, seconds = divmod(remaining, 60)
+    parts = []
+    for amount, unit in ((hours, "h"), (minutes, "m"), (seconds, "s")):
+        if amount:
+            parts.append(f"{amount}{unit}")
+    return " ".join(parts) or "0s"

@@ -14,9 +14,26 @@
       "tls": false
     }
   },
+  "health": {
+    "camera_offline_alert_seconds": [60, 300, 1800],
+    "internet_enabled": true,
+    "internet_poll_seconds": 30,
+    "internet_timeout_seconds": 5,
+    "internet_failure_threshold": 2
+  },
   "presence": {
     "enabled": false,
     "poll_interval_seconds": 30,
+    "devices": [
+      {
+        "name": "Daniel iPhone",
+        "macs": ["00:00:00:00:00:01"]
+      },
+      {
+        "name": "Second iPhone",
+        "macs": ["00:00:00:00:00:02"]
+      }
+    ],
     "sources": [
       {
         "type": "asuswrt",
@@ -34,7 +51,7 @@
         "host": "192.168.100.1",
         "username_env": "HUAWEI_ROUTER_USER",
         "password_env": "HUAWEI_ROUTER_PASSWORD",
-        "macs": ["00:00:00:00:00:00"]
+        "macs": ["00:00:00:00:00:01", "00:00:00:00:00:02"]
       }
     ]
   },

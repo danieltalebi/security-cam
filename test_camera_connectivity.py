@@ -12,6 +12,9 @@ class FakeNotifier:
         self.messages.append(text)
         return True
 
+    def send_message(self, text):
+        self.messages.append(text)
+
 
 class CameraConnectivityTests(unittest.TestCase):
     def setUp(self):
@@ -52,6 +55,18 @@ class CameraConnectivityTests(unittest.TestCase):
             self.alerts.set_online(False)
         self.alerts.check(1300)
         self.assertEqual(len(self.notifier.messages), 1)
+
+    @patch("telegram_notify.time.time", return_value=1000)
+    def test_system_connectivity_alert_bypasses_notification_mute_path(self, _time):
+        notifier = FakeNotifier()
+        notifier.send_notification_message = lambda _text: self.fail("muted path used")
+        alerts = CameraConnectivityAlerts(
+            "garage", notifier, thresholds=(60,), start_thread=False, bypass_mute=True,
+        )
+        alerts.set_online(False)
+        alerts.check(1060)
+
+        self.assertEqual(len(notifier.messages), 1)
 
 
 if __name__ == "__main__":

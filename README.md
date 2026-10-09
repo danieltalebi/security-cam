@@ -73,6 +73,13 @@ To pause Telegram alerts, send the bot a duration such as `10m`, `1h`, or `1h30m
 
 Camera connectivity is monitored through the DVRIP event connection. If a camera remains offline, Telegram sends alerts after 5, 30, and 60 minutes. Once an outage has produced an alert, another message is sent when that camera reconnects. Each outage produces at most those three offline alerts.
 
+The multi-camera service sends technical health messages through a dedicated,
+unmuted Telegram path even when detection output is MQTT-only. Its camera
+defaults are 1, 5, and 30 minutes. Router reachability is reported on state
+changes, and Internet outages are timed locally so their full duration can be
+reported as soon as connectivity returns. Pausing detection notifications does
+not pause these health messages.
+
 #### Home Assistant via MQTT
 
 MQTT is the recommended notification backend. The camera process remains
@@ -156,6 +163,13 @@ both router logins, hides password input, and stores the four values in the
 current user's macOS Keychain. `router_presence.py` checks environment variables
 first and then the Keychain, so the credentials survive reboots without being
 written to this repository.
+
+Router polling is silent while nothing changes. The monitor logs initialization
+and transitions only: each named iPhone connecting or disconnecting, all
+configured iPhones becoming unavailable, the combined home/away state, and each
+router becoming unreachable or recovering. Use `presence.devices` to group
+multiple private Wi-Fi MAC addresses under one phone name. Without that mapping,
+one redacted `iPhone …XX:XX` label is generated per configured MAC.
 
 #### macOS app, dashboard, and background service
 

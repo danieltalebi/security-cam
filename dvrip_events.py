@@ -131,6 +131,7 @@ class DVRIPAlarmListener:
             self._thread.join(timeout=self.reconnect_seconds + 2)
 
     def _run(self) -> None:
+        connectivity_state: bool | None = None
         while not self._stop.is_set():
             connection = DVRIPConnection(self.host, self.port, self.username, self.password)
             try:
@@ -139,10 +140,13 @@ class DVRIPAlarmListener:
                 connection.send(ALARM_SET_REQUEST, {"Name": "", "SessionID": f"0x{connection.session:08X}"})
                 command, response, _ = connection.receive()
                 if command != ALARM_SET_RESPONSE or not response or response.get("Ret") not in (100, "100"):
-                    self.on_status("DVRIP alarm subscription was not confirmed; listening anyway.")
-                else:
+                    if connectivity_state is not True:
+                        self.on_status("DVRIP alarm subscription was not confirmed; listening anyway.")
+                elif connectivity_state is not True:
                     self.on_status("DVRIP alarm listener connected.")
-                self.on_connectivity(True)
+                if connectivity_state is not True:
+                    self.on_connectivity(True)
+                    connectivity_state = True
                 if connection.socket:
                     connection.socket.settimeout(1.0)
                 last_keepalive = time.monotonic()
@@ -168,8 +172,10 @@ class DVRIPAlarmListener:
                     else:
                         self.on_status(f"DVRIP message {command} received while listening.")
             except (OSError, ConnectionError, PermissionError, struct.error) as error:
-                self.on_connectivity(False)
-                self.on_status(f"DVRIP listener reconnecting: {type(error).__name__}: {error}")
+                if connectivity_state is not False:
+                    self.on_connectivity(False)
+                    self.on_status(f"DVRIP listener reconnecting: {type(error).__name__}: {error}")
+                    connectivity_state = False
             finally:
                 connection.close()
             self._stop.wait(self.reconnect_seconds)

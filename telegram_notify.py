@@ -214,11 +214,13 @@ class CameraConnectivityAlerts:
         self, camera_name: str, notifier: TelegramNotifier,
         thresholds: tuple[float, ...] = (300, 1800, 3600),
         check_seconds: float = 5.0, start_thread: bool = True,
+        bypass_mute: bool = False,
     ):
         self.camera_name = camera_name
         self.notifier = notifier
         self.thresholds = thresholds
         self.check_seconds = check_seconds
+        self.bypass_mute = bypass_mute
         self._online: bool | None = None
         self._offline_since: float | None = None
         self._alerts_sent = 0
@@ -233,6 +235,9 @@ class CameraConnectivityAlerts:
 
     def _send(self, text: str) -> bool:
         try:
+            if self.bypass_mute:
+                self.notifier.send_message(text)
+                return True
             return self.notifier.send_notification_message(text)
         except Exception as error:
             print(f"{self.camera_name}: Telegram connectivity alert failed: {type(error).__name__}: {error}")
