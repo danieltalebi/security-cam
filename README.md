@@ -48,18 +48,26 @@ For the basic RTSP recorder, open `run_windows.bat` in a text editor, set `STREA
 
 #### Windows smart DVRIP + Telegram monitor
 
-The dual-lens property classifier uses a separate launcher so it can wait for the camera's own DVRIP person event, take an immediate JPEG snapshot, classify the person as `private`, `public`, or `uncertain`, and only use RTSP as a fallback for uncertain results.
+The dual-lens garage monitor waits for the camera's own DVRIP person event. A
+person in the fixed lens alerts immediately because that lens only covers the
+garage. A person in the PTZ lens starts a short JPEG snapshot session instead of
+opening RTSP: YOLO detects the person, background feature matching compensates
+for PTZ auto-tracking, and an alert is produced only when the stabilized track
+remains in a small area for the configured dwell time.
 
 1. Double-click `setup_camera_windows.bat` and give the camera a name, such as `garage` or `back patio`. Choose `property` for the dual-lens public/private classifier, or `presence` when any detected person should alert.
 2. The setup creates one non-secret JSON file per camera and adds it to the ignored `multi-camera.json`. It stores its credentials as Windows user variables derived from the name: `CAMERA_GARAGE_USER`, `CAMERA_GARAGE_PASSWORD`, and, for a property camera, `CAMERA_GARAGE_RTSP_URL`.
-3. Open the property camera JSON only to calibrate its layout, zones, and classifier model path. Do not put passwords in it.
+3. Open the property camera JSON only to calibrate its layout and `snapshot_loitering` thresholds. Do not put passwords in it.
 4. Close the setup window, open a new Command Prompt, then double-click `run_multi_windows.bat`.
 
 The assistant uses Windows user environment variables because they are simple, work with the monitor directly, and avoid storing secrets in the repository. They are not encrypted. For a shared Windows computer or stricter secret protection, use a dedicated Windows account and restrict access; a future enhancement can use Windows Credential Manager.
 
 The same `CAMERA_<NAME>_USER` and `CAMERA_<NAME>_PASSWORD` are used for both DVRIP and ONVIF. There are no separate DVRIP credential variables to keep in sync.
 
-It sends Telegram notifications only for confirmed `private` detections. Every annotated result is saved locally under `events\\review\\private`, `events\\review\\public`, or `events\\review\\uncertain` for later review. Press `Ctrl+C` in its terminal window to stop it.
+It alerts immediately for fixed-lens people and for PTZ people whose stabilized
+track satisfies the dwell rule. Passersby are recorded as `walking_or_gone`
+without notifying. Notification text includes the evidence source. Press
+`Ctrl+C` in its terminal window to stop it.
 
 To pause Telegram alerts, send the bot a duration such as `10m`, `1h`, or `1h30m`. Send `status` to see the remaining pause or `resume` to enable alerts immediately. Only messages from the configured Telegram chat are accepted. Detection and local event saving continue while alerts are paused, and the pause survives monitor restarts.
 
@@ -67,7 +75,11 @@ Camera connectivity is monitored through the DVRIP event connection. If a camera
 
 #### Home Assistant via MQTT
 
-MQTT is the recommended notification backend. The camera process remains responsible for DVRIP listening, snapshots, YOLO confirmation, and the garage `private`/`public`/`uncertain` classification. Home Assistant receives the final classification and decides whether a notification should be sent.
+MQTT is the recommended notification backend. The camera process remains
+responsible for DVRIP listening, snapshots, YOLO confirmation, fixed-lens
+alerts, and background-stabilized PTZ dwell tracking. Home Assistant receives
+the final decision and its source and decides whether a notification should be
+sent.
 
 1. Install the Mosquitto Broker app and MQTT integration in Home Assistant.
 2. Create a dedicated broker user for this application.

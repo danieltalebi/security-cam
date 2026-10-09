@@ -412,7 +412,7 @@ private final class DashboardViewController: NSViewController {
         }
         alarmCard.update(value: alarmDisplay.0, detail: "Estado recibido por el monitor", color: alarmDisplay.1)
 
-        let presenceLine = lines.last(where: { $0.hasPrefix("Wi-Fi presence:") }) ?? ""
+        let presenceLine = lines.last(where: { $0.contains("Wi-Fi presence:") }) ?? ""
         let presence = presenceLine.components(separatedBy: "Wi-Fi presence:").last?.trimmingCharacters(in: .whitespaces) ?? "desconocida"
         let presenceHome = presence.hasPrefix("home")
         let presenceAway = presence.hasPrefix("away")
@@ -456,7 +456,7 @@ private final class DashboardViewController: NSViewController {
         return entries.compactMap { entry in
             guard let name = entry["name"] as? String else { return nil }
             let mode = entry["mode"] as? String ?? "camera"
-            let last = lines.reversed().first(where: { $0.hasPrefix("\(name): DVRIP") })?.lowercased() ?? ""
+            let last = lines.reversed().first(where: { $0.contains("\(name): DVRIP") })?.lowercased() ?? ""
             if last.contains("disconnected") || last.contains("failed") || last.contains("retry") {
                 return CameraSnapshot(name: name, mode: mode, state: "Desconectada", color: .systemRed)
             }
@@ -497,7 +497,10 @@ private final class DashboardViewController: NSViewController {
     }
 
     private func latestValue(in lines: [String], prefix: String) -> String? {
-        lines.reversed().first(where: { $0.hasPrefix(prefix) }).map { String($0.dropFirst(prefix.count)).trimmingCharacters(in: .whitespaces) }
+        lines.reversed().compactMap { line in
+            guard let range = line.range(of: prefix) else { return nil }
+            return String(line[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+        }.first
     }
 
     private func readTail(_ url: URL, maxBytes: UInt64) -> String {

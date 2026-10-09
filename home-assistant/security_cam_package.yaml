@@ -833,10 +833,12 @@ automation:
               caption: >-
                 {% if alarm_profile == 'armed_home' %}
                   🚨 ALARMA EN CASA · {{ event.camera }} · {{ event.classification }} ·
-                  personas={{ event.persons }}. Respondé OK para reconocer este incidente.
+                  personas={{ event.persons }} · fuente={{ event.source }}.
+                  Respondé OK para reconocer este incidente.
                 {% else %}
                   🚨 ALARMA FUERA · {{ event.camera }} · {{ event.classification }} ·
-                  personas={{ event.persons }}. Respondé OK para reconocer este incidente.
+                  personas={{ event.persons }} · fuente={{ event.source }}.
+                  Respondé OK para reconocer este incidente.
                 {% endif %}
           - action: input_number.set_value
             target:

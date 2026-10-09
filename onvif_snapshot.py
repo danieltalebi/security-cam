@@ -45,7 +45,12 @@ def download_snapshot(uri: str, username: str, password: str, timeout: float) ->
     # challenge for urllib's retry path. Send it proactively while retaining
     # the Basic/Digest handlers above for standards-compliant cameras.
     basic_token = b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
-    request = Request(uri, headers={"Accept": "image/jpeg", "Authorization": f"Basic {basic_token}"})
+    request = Request(uri, headers={
+        "Accept": "image/jpeg",
+        "Authorization": f"Basic {basic_token}",
+        "Cache-Control": "no-cache, no-store",
+        "Pragma": "no-cache",
+    })
     try:
         with opener.open(request, timeout=timeout) as response:
             image = response.read()

@@ -18,6 +18,7 @@ import numpy as np
 from dvrip_events import DVRIPAlarmListener
 from onvif_snapshot import download_snapshot, xmeye_snapshot_uri
 from telegram_notify import CameraConnectivityAlerts, TelegramNotifier
+from timestamp_logging import install_timestamped_logging
 from camera_config import camera_name, credentials, dvrip_endpoint, expand_host, required_env, rtsp_url
 
 if TYPE_CHECKING:
@@ -226,6 +227,7 @@ def load_config(path: Path) -> dict:
 
 
 def main() -> None:
+    install_timestamped_logging()
     from dvrip_smart_telegram import SmartAlarm, load_windows_user_environment
 
     parser = ArgumentParser(description="Run smart DVRIP monitoring for multiple cameras.")
@@ -276,10 +278,8 @@ def main() -> None:
             home_assistant.register_camera(name)
         if mode == "property":
             stream = os.environ.get(entry["stream_env"]) if entry.get("stream_env") else rtsp_url(config, name)
-            if not stream:
-                raise RuntimeError(f"{name}: its CAMERA_<NAME>_RTSP_URL environment variable is not set.")
             alarm = SmartAlarm(
-                config, stream, notifier=notifier,
+                config, stream or "", notifier=notifier,
                 home_assistant=home_assistant, name=name,
             )
             handler = alarm.handle_event

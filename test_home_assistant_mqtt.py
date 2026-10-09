@@ -42,6 +42,7 @@ class HomeAssistantMQTTTests(unittest.TestCase):
         self.assertEqual(self.published[-1][0], "security_cam/back_patio/event")
         event = json.loads(self.published[-1][1])
         self.assertEqual(event["classification"], "presence")
+        self.assertEqual(event["source"], "image")
         self.assertEqual(event["camera_entity_id"], "camera.security_cam_back_patio")
 
     def test_camera_status_is_retained(self):

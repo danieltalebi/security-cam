@@ -64,6 +64,22 @@
     "video_fallback_seconds": 8,
     "video_sample_seconds": 0.8
   },
+  "snapshot_loitering": {
+    "enabled": true,
+    "snapshot_interval_seconds": 0.75,
+    "observation_seconds": 12,
+    "dwell_seconds": 8,
+    "min_detections": 6,
+    "max_missing_snapshots": 3,
+    "track_timeout_seconds": 2.5,
+    "stationary_radius_body_heights": 0.55,
+    "match_distance_body_heights": 1.5,
+    "background_max_width": 800,
+    "background_max_features": 1200,
+    "background_min_matches": 18,
+    "background_min_inlier_ratio": 0.35,
+    "cache_bust_query": true
+  },
   "telegram": {
     "token_env": "TELEGRAM_BOT_TOKEN",
     "chat_id_env": "TELEGRAM_CHAT_ID"
