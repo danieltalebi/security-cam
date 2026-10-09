@@ -73,6 +73,8 @@ make_menu_plist() {
   /usr/libexec/PlistBuddy -c "Add :ProgramArguments:1 string --background" "$target"
   /usr/libexec/PlistBuddy -c "Add :RunAtLoad bool true" "$target"
   /usr/libexec/PlistBuddy -c "Add :ProcessType string Interactive" "$target"
+  /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables dict" "$target"
+  /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:NSUnbufferedIO string YES" "$target"
   /usr/libexec/PlistBuddy -c "Add :StandardOutPath string $logs_dir/menu.log" "$target"
   /usr/libexec/PlistBuddy -c "Add :StandardErrorPath string $logs_dir/menu-error.log" "$target"
 }

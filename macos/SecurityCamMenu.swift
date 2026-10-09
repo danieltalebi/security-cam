@@ -36,6 +36,7 @@ private final class SecurityCamPaths {
     }
 
     var monitorLogURL: URL { logsURL.appendingPathComponent("monitor.log") }
+    var dashboardStateURL: URL { logsURL.appendingPathComponent("dashboard-state.json") }
     var mainConfigURL: URL { projectURL.appendingPathComponent("multi-camera.json") }
 
     func setProjectURL(_ url: URL) {
@@ -163,6 +164,7 @@ private final class DashboardViewController: NSViewController {
     private let lastUpdatedLabel = NSTextField(labelWithString: "")
     private var configURLs: [URL] = []
     private var refreshTimer: Timer?
+    private var loggedInitialState = false
     var onServiceStatusChanged: ((ServiceSnapshot) -> Void)?
 
     init(paths: SecurityCamPaths, service: ServiceController) {
@@ -430,6 +432,23 @@ private final class DashboardViewController: NSViewController {
         projectLabel.stringValue = paths.projectURL.path
         reloadConfigListIfNeeded()
         onServiceStatusChanged?(snapshot)
+        if !loggedInitialState {
+            loggedInitialState = true
+            print("Dashboard loaded: project=\(paths.projectURL.path), log_lines=\(lines.count), cameras=\(cameras.count), service_running=\(snapshot.running)")
+        }
+        let diagnostic: [String: Any] = [
+            "project": paths.projectURL.path,
+            "monitor_log": paths.monitorLogURL.path,
+            "log_lines_read": lines.count,
+            "cameras_read": cameras.count,
+            "service_running": snapshot.running,
+            "alarm": alarm ?? "unknown",
+            "presence": presence,
+            "updated_at": ISO8601DateFormatter().string(from: Date()),
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: diagnostic, options: [.prettyPrinted, .sortedKeys]) {
+            try? data.write(to: paths.dashboardStateURL, options: .atomic)
+        }
     }
 
     private func cameraSnapshots(lines: [String]) -> [CameraSnapshot] {
@@ -472,8 +491,8 @@ private final class DashboardViewController: NSViewController {
             row.orientation = .horizontal
             row.alignment = .centerY
             row.spacing = 9
-            row.widthAnchor.constraint(equalTo: cameraStack.widthAnchor).isActive = true
             cameraStack.addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: cameraStack.widthAnchor).isActive = true
         }
     }
 
@@ -579,16 +598,24 @@ private final class DashboardViewController: NSViewController {
 private final class AppDelegate: NSObject, NSApplicationDelegate {
     private let paths = SecurityCamPaths()
     private let service = ServiceController()
-    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+    private var statusItem: NSStatusItem!
     private let stateItem = NSMenuItem(title: "Comprobando…", action: nil, keyEquivalent: "")
     private lazy var serviceControlItem = menuItem("Reiniciar monitor", #selector(restartService))
     private var window: NSWindow?
     private var dashboard: DashboardViewController?
     private var timer: Timer?
     private let backgroundLaunch = CommandLine.arguments.contains("--background")
+    private var started = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        start()
+    }
+
+    func start() {
+        guard !started else { return }
+        started = true
         NSApp.setActivationPolicy(backgroundLaunch ? .accessory : .regular)
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         configureStatusItem()
         createDashboard()
         refreshMenuStatus()
@@ -634,6 +661,7 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
         window.isReleasedWhenClosed = false
         self.dashboard = dashboard
         self.window = window
+        dashboard.refreshNow()
     }
 
     @objc private func showDashboard() {
@@ -672,10 +700,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 
 @main
 enum SecurityCamMain {
+    private static var retainedDelegate: AppDelegate?
+
     static func main() {
         let app = NSApplication.shared
         let delegate = AppDelegate()
+        retainedDelegate = delegate
         app.delegate = delegate
+        app.finishLaunching()
+        delegate.start()
         app.run()
     }
 }
