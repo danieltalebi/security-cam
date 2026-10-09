@@ -3,25 +3,25 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleDisplayName</key>
-    <string>Security Cam Menu</string>
+	<string>Security Cam</string>
     <key>CFBundleExecutable</key>
-    <string>SecurityCamMenu</string>
+	<string>SecurityCam</string>
     <key>CFBundleIdentifier</key>
-    <string>com.danieltalebi.security-cam-menubar</string>
+	<string>com.danieltalebi.security-cam-dashboard</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
-    <string>Security Cam Menu</string>
+	<string>Security Cam</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+	<string>1.0.0</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
     <string>13.0</string>
-    <key>LSUIElement</key>
-    <true/>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
     <key>NSHighResolutionCapable</key>
     <true/>
 </dict>

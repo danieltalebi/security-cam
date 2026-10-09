@@ -145,15 +145,25 @@ current user's macOS Keychain. `router_presence.py` checks environment variables
 first and then the Keychain, so the credentials survive reboots without being
 written to this repository.
 
-#### macOS background service and menu bar controls
+#### macOS app, dashboard, and background service
 
 Double-click `install_macos_service.command` once to install the camera monitor
 as a per-user LaunchAgent. It starts automatically when the user logs in and is
-restarted by macOS after an unexpected failure. The installer also adds a native
-camera icon to the menu bar with **Start**, **Restart**, **Stop**, and **Open
-Logs** actions. Logs are stored in `~/Library/Logs/security-cam`; the monitor
-continues running when Terminal is closed. Run the installer again after moving
-this repository so the LaunchAgent receives the new absolute path. On macOS,
+restarted by macOS after an unexpected failure. The installer also adds the
+native **Security Cam** dashboard and its menu-bar control. The dashboard shows
+the monitor, alarm, router-presence, camera DVRIP, and health states; exposes
+recent logs; and can validate, back up, save, and apply the active JSON camera
+configuration. Logs are stored in `~/Library/Logs/security-cam`; the monitor
+continues running when the dashboard and Terminal are closed.
+
+To build the drag-to-install disk image, double-click
+`macos/build_dmg.command` or run it from Terminal. The signed local build is
+written to `dist/SecurityCam-<version>.dmg`. Drag **Security Cam** to
+Applications. This local DMG controls the runtime in this repository; select a
+different project folder from the Configuration tab if the repository moves.
+
+Run the service installer again after moving this repository so the LaunchAgent
+receives the new absolute path. On macOS,
 camera credentials and RTSP URLs may also be stored as Keychain items named
 `security-cam-<VARIABLE_NAME>`; the monitor checks those after environment
 variables, which makes them available to LaunchAgents without plaintext files.
