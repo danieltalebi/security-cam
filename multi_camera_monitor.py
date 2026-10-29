@@ -281,8 +281,16 @@ def main() -> None:
     health_config = multi.get("health", {})
     camera_thresholds = tuple(
         float(value)
-        for value in health_config.get("camera_offline_alert_seconds", [60, 300, 1800])
+        for value in health_config.get("camera_offline_alert_seconds", [300])
     )
+    camera_repeat_seconds = health_config.get("camera_offline_repeat_seconds", 21600)
+    camera_repeat_seconds = (
+        float(camera_repeat_seconds) if camera_repeat_seconds is not None else None
+    )
+    if not camera_thresholds or any(value <= 0 for value in camera_thresholds):
+        raise RuntimeError("health.camera_offline_alert_seconds must contain positive seconds.")
+    if camera_repeat_seconds is not None and camera_repeat_seconds <= 0:
+        raise RuntimeError("health.camera_offline_repeat_seconds must be positive or null.")
     if system_notifier and health_config.get("internet_enabled", True):
         from internet_connectivity import InternetConnectivityMonitor
 
@@ -328,8 +336,10 @@ def main() -> None:
             home_assistant.register_camera(name)
         if mode == "property":
             stream = os.environ.get(entry["stream_env"]) if entry.get("stream_env") else rtsp_url(config, name)
+            if not stream:
+                raise RuntimeError(f"{name}: its CAMERA_<NAME>_RTSP_URL environment variable is not set.")
             alarm = SmartAlarm(
-                config, stream or "", notifier=notifier,
+                config, stream, notifier=notifier,
                 home_assistant=home_assistant, name=name,
             )
             handler = alarm.handle_event
@@ -343,7 +353,8 @@ def main() -> None:
         else:
             raise RuntimeError(f"{name}: unsupported mode {mode!r}.")
         connectivity = CameraConnectivityAlerts(
-            name, system_notifier, thresholds=camera_thresholds, bypass_mute=True,
+            name, system_notifier, thresholds=camera_thresholds,
+            repeat_seconds=camera_repeat_seconds, bypass_mute=True,
         ) if system_notifier else None
 
         def set_connectivity(online: bool, camera=name, alerts=connectivity) -> None:

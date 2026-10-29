@@ -1,5 +1,6 @@
 @echo off
 setlocal
+cd /d "%~dp0"
 
 REM ============================================
 REM  Edit the settings below before running
@@ -35,8 +36,14 @@ if "%STREAM_URL%"=="rtsp://user:password@ip:port/stream" (
     exit /b 1
 )
 
-call venv\Scripts\activate.bat
+if not exist "venv\Scripts\python.exe" (
+    echo The Python environment was not found. Run setup_windows.bat first.
+    pause
+    exit /b 1
+)
 
-python yolo-rtsp-security-cam.py --stream "%STREAM_URL%" --yolo %YOLO_OBJECTS% %MONITOR% %ROI% %EXTRA_ARGS%
+venv\Scripts\python.exe -u yolo-rtsp-security-cam.py --stream "%STREAM_URL%" --yolo %YOLO_OBJECTS% %MONITOR% %ROI% %EXTRA_ARGS%
+set "APP_EXIT_CODE=%ERRORLEVEL%"
 
 pause
+exit /b %APP_EXIT_CODE%

@@ -208,22 +208,25 @@ class TelegramNotifier:
 
 
 class CameraConnectivityAlerts:
-    """Send escalating offline alerts and one recovery alert per outage."""
+    """Send offline alerts, periodic reminders, and one recovery alert per outage."""
 
     def __init__(
         self, camera_name: str, notifier: TelegramNotifier,
         thresholds: tuple[float, ...] = (300, 1800, 3600),
         check_seconds: float = 5.0, start_thread: bool = True,
         bypass_mute: bool = False,
+        repeat_seconds: float | None = None,
     ):
         self.camera_name = camera_name
         self.notifier = notifier
         self.thresholds = thresholds
         self.check_seconds = check_seconds
         self.bypass_mute = bypass_mute
+        self.repeat_seconds = repeat_seconds
         self._online: bool | None = None
         self._offline_since: float | None = None
         self._alerts_sent = 0
+        self._next_repeat_at: float | None = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
@@ -254,10 +257,12 @@ class CameraConnectivityAlerts:
                 self._online = True
                 self._offline_since = None
                 self._alerts_sent = 0
+                self._next_repeat_at = None
             else:
                 if self._online is not False:
                     self._offline_since = time.time()
                     self._alerts_sent = 0
+                    self._next_repeat_at = None
                 self._online = False
         if should_report_recovery and recovery_seconds is not None:
             self._send(
@@ -278,6 +283,20 @@ class CameraConnectivityAlerts:
                 messages.append(
                     f"⚠️ {self.camera_name} camera has been offline for {format_duration(threshold)}."
                 )
+                if self._alerts_sent == len(self.thresholds) and self.repeat_seconds:
+                    self._next_repeat_at = now + self.repeat_seconds
+            if (
+                self.repeat_seconds
+                and self._alerts_sent >= len(self.thresholds)
+                and self._next_repeat_at is not None
+                and now >= self._next_repeat_at
+            ):
+                messages.append(
+                    f"⚠️ Reminder: {self.camera_name} camera is still offline "
+                    f"after {format_duration(elapsed)}."
+                )
+                missed_intervals = int((now - self._next_repeat_at) // self.repeat_seconds)
+                self._next_repeat_at += (missed_intervals + 1) * self.repeat_seconds
         for message in messages:
             self._send(message)
 

@@ -109,12 +109,14 @@ class DVRIPAlarmListener:
         on_event: Callable[[dict], None], on_status: Callable[[str], None] | None = None,
         reconnect_seconds: float = 3.0,
         on_connectivity: Callable[[bool], None] | None = None,
+        connectivity_timeout_seconds: float = 45.0,
     ):
         self.host, self.port = host, port
         self.username, self.password = username, password
         self.on_event, self.on_status = on_event, on_status or (lambda _message: None)
         self.on_connectivity = on_connectivity or (lambda _online: None)
         self.reconnect_seconds = reconnect_seconds
+        self.connectivity_timeout_seconds = connectivity_timeout_seconds
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -150,14 +152,22 @@ class DVRIPAlarmListener:
                 if connection.socket:
                     connection.socket.settimeout(1.0)
                 last_keepalive = time.monotonic()
+                last_response = last_keepalive
                 while not self._stop.is_set():
-                    if time.monotonic() - last_keepalive >= 15:
+                    now = time.monotonic()
+                    if now - last_response >= self.connectivity_timeout_seconds:
+                        raise ConnectionError(
+                            "camera stopped responding to DVRIP keepalives for "
+                            f"{self.connectivity_timeout_seconds:g}s"
+                        )
+                    if now - last_keepalive >= 15:
                         connection.send(KEEPALIVE_REQUEST, {"Name": "KeepAlive", "SessionID": f"0x{connection.session:08X}"})
-                        last_keepalive = time.monotonic()
+                        last_keepalive = now
                     try:
                         command, payload, raw = connection.receive()
                     except socket.timeout:
                         continue
+                    last_response = time.monotonic()
                     if command == KEEPALIVE_RESPONSE:
                         continue
                     if command == ALARM_INFO:

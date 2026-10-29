@@ -68,6 +68,36 @@ class CameraConnectivityTests(unittest.TestCase):
 
         self.assertEqual(len(notifier.messages), 1)
 
+    @patch("telegram_notify.time.time", return_value=1000)
+    def test_offline_alert_repeats_until_recovery(self, _time):
+        alerts = CameraConnectivityAlerts(
+            "garage", self.notifier, thresholds=(300,), repeat_seconds=3600,
+            start_thread=False,
+        )
+        alerts.set_online(False)
+        alerts.check(1300)
+        alerts.check(4899)
+        alerts.check(4900)
+        alerts.check(8500)
+
+        self.assertEqual(len(self.notifier.messages), 3)
+        self.assertIn("still offline", self.notifier.messages[1])
+        self.assertIn("still offline", self.notifier.messages[2])
+
+    @patch("telegram_notify.time.time", return_value=1000)
+    def test_late_check_sends_only_one_repeat_and_reschedules(self, _time):
+        alerts = CameraConnectivityAlerts(
+            "garage", self.notifier, thresholds=(300,), repeat_seconds=3600,
+            start_thread=False,
+        )
+        alerts.set_online(False)
+        alerts.check(1300)
+        alerts.check(13000)
+        alerts.check(15699)
+        alerts.check(15700)
+
+        self.assertEqual(len(self.notifier.messages), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -15,7 +15,8 @@
     }
   },
   "health": {
-    "camera_offline_alert_seconds": [60, 300, 1800],
+    "camera_offline_alert_seconds": [300],
+    "camera_offline_repeat_seconds": 21600,
     "internet_enabled": true,
     "internet_poll_seconds": 30,
     "internet_timeout_seconds": 5,

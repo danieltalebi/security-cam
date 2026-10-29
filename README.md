@@ -23,8 +23,8 @@ It might be possible to run YOLO on the CPU, but it will be slow and I didn't te
 Clone this repository and install dependencies:
 
 ```bash
-git clone https://github.com/PhazerTech/yolo-rtsp-security-cam
-cd yolo-rtsp-security-cam
+git clone https://github.com/danieltalebi/security-cam.git
+cd security-cam
 pip3 install -r requirements.txt
 ```
 
@@ -32,50 +32,85 @@ pip3 install -r requirements.txt
 
 **Requirements:**
 
-- **Python 3.11** — download from https://www.python.org/downloads/release/python-3119/ and check "Add Python to PATH" during installation. Python 3.11 is required because newer versions may not be supported by PyTorch.
+- **64-bit Python 3.11** — download from https://www.python.org/downloads/release/python-3119/ and install the Python launcher. The Windows installer deliberately uses 3.11 as the project's tested version.
 - **ffmpeg** — download the latest build from https://www.gyan.dev/ffmpeg/builds/, extract the zip, and add the `bin\` folder to your system PATH.
-- **GPU acceleration (recommended)** — install PyTorch with CUDA support before running setup: https://pytorch.org/get-started/locally/. Select Windows, Pip, Python, and your CUDA version, then run the generated install command. AMD GPUs are not supported on Windows (ROCm is Linux-only).
+- An NVIDIA GPU is optional. CPU inference works but is slower.
 
 Once the requirements are installed, clone the repository and run the setup script:
 
 ```bat
-git clone https://github.com/PhazerTech/yolo-rtsp-security-cam
-cd yolo-rtsp-security-cam
+git clone https://github.com/danieltalebi/security-cam.git
+cd security-cam
 setup_windows.bat
 ```
+
+`setup_windows.bat` creates `venv`, installs every dependency into that exact
+environment, checks ffmpeg and all application imports, and loads
+`yolov8n.pt`. Loading the model during setup downloads it once on a clean clone
+and prevents the first real camera event from discovering a missing model.
+
+For NVIDIA GPU acceleration, first complete the normal setup. Then use the
+official [PyTorch Windows selector](https://pytorch.org/get-started/locally/)
+and run its generated command with `venv\Scripts\python.exe -m pip` instead of
+plain `pip`. Verify the result with:
+
+```bat
+venv\Scripts\python.exe verify_windows_install.py --model
+```
+
+The final line reports either the NVIDIA GPU name or `CPU`, so it is clear
+which device YOLO will use.
 
 For the basic RTSP recorder, open `run_windows.bat` in a text editor, set `STREAM_URL` and other options, then double-click it to start the app.
 
 #### Windows smart DVRIP + Telegram monitor
 
-The dual-lens garage monitor waits for the camera's own DVRIP person event. A
-person in the fixed lens alerts immediately because that lens only covers the
-garage. A person in the PTZ lens starts a short JPEG snapshot session instead of
-opening RTSP: YOLO detects the person, background feature matching compensates
-for PTZ auto-tracking, and an alert is produced only when the stabilized track
-remains in a small area for the configured dwell time.
+The dual-lens property monitor waits for the camera's own DVRIP person event,
+takes one immediate JPEG snapshot, and classifies each detected person as
+`private`, `public`, or `uncertain` from the ground beneath their feet. It opens
+a short RTSP analysis window only when that first image is uncertain.
 
 1. Double-click `setup_camera_windows.bat` and give the camera a name, such as `garage` or `back patio`. Choose `property` for the dual-lens public/private classifier, or `presence` when any detected person should alert.
 2. The setup creates one non-secret JSON file per camera and adds it to the ignored `multi-camera.json`. It stores its credentials as Windows user variables derived from the name: `CAMERA_GARAGE_USER`, `CAMERA_GARAGE_PASSWORD`, and, for a property camera, `CAMERA_GARAGE_RTSP_URL`.
-3. Open the property camera JSON only to calibrate its layout and `snapshot_loitering` thresholds. Do not put passwords in it.
-4. Close the setup window, open a new Command Prompt, then double-click `run_multi_windows.bat`.
+3. Open the property camera JSON only to calibrate its layout, classifier model path, and public/private thresholds. Do not put passwords in it.
+4. Double-click `diagnose_cameras_windows.bat`. It must report `DVRIP OK` and
+   `snapshot OK` for every camera.
+5. Double-click `run_multi_windows.bat` to start monitoring. The old
+   `run_smart_windows.bat` name remains as a compatibility wrapper and starts
+   the same multi-camera monitor.
+
+For a desktop application instead of a terminal script, run
+`build_windows_app.bat` once after setup. It creates `dist\SecurityCam.exe`, a
+small Windows dashboard that starts and stops the monitor, runs camera
+diagnostics, opens the configuration, and shows live logs. Keep the executable
+inside the repository's `dist` directory; it deliberately reuses the tested
+`venv` and model files rather than bundling a second multi-gigabyte copy of
+PyTorch and YOLO. If it must live elsewhere, set `SECURITY_CAM_HOME` to the
+repository directory.
 
 The assistant uses Windows user environment variables because they are simple, work with the monitor directly, and avoid storing secrets in the repository. They are not encrypted. For a shared Windows computer or stricter secret protection, use a dedicated Windows account and restrict access; a future enhancement can use Windows Credential Manager.
 
 The same `CAMERA_<NAME>_USER` and `CAMERA_<NAME>_PASSWORD` are used for both DVRIP and ONVIF. There are no separate DVRIP credential variables to keep in sync.
 
-It alerts immediately for fixed-lens people and for PTZ people whose stabilized
-track satisfies the dwell rule. Passersby are recorded as `walking_or_gone`
-without notifying. Notification text includes the evidence source. Press
-`Ctrl+C` in its terminal window to stop it.
+It notifies only for people classified as `private`. Every result is retained
+under the configured review directory in `private`, `public`, or `uncertain`
+folders. Notification text includes the evidence source. Press `Ctrl+C` in its
+terminal window to stop it.
 
 To pause Telegram alerts, send the bot a duration such as `10m`, `1h`, or `1h30m`. Send `status` to see the remaining pause or `resume` to enable alerts immediately. Only messages from the configured Telegram chat are accepted. Detection and local event saving continue while alerts are paused, and the pause survives monitor restarts.
 
-Camera connectivity is monitored through the DVRIP event connection. If a camera remains offline, Telegram sends alerts after 5, 30, and 60 minutes. Once an outage has produced an alert, another message is sent when that camera reconnects. Each outage produces at most those three offline alerts.
+Camera connectivity is monitored through the DVRIP event connection, including
+a watchdog that reconnects when keepalive responses stop. The multi-camera
+defaults send the first Telegram alert after 5 minutes and repeat it every 6
+hours while the camera remains offline. Configure those intervals with
+`health.camera_offline_alert_seconds` and
+`health.camera_offline_repeat_seconds`; set the repeat value to `null` to
+disable reminders. Once an outage has produced an alert, another message is
+sent when that camera reconnects.
 
 The multi-camera service sends technical health messages through a dedicated,
 unmuted Telegram path even when detection output is MQTT-only. Its camera
-defaults are 1, 5, and 30 minutes. Router reachability is reported on state
+default is 5 minutes followed by reminders every 6 hours. Router reachability is reported on state
 changes, and Internet outages are timed locally so their full duration can be
 reported as soon as connectivity returns. Pausing detection notifications does
 not pause these health messages.
@@ -83,10 +118,9 @@ not pause these health messages.
 #### Home Assistant via MQTT
 
 MQTT is the recommended notification backend. The camera process remains
-responsible for DVRIP listening, snapshots, YOLO confirmation, fixed-lens
-alerts, and background-stabilized PTZ dwell tracking. Home Assistant receives
-the final decision and its source and decides whether a notification should be
-sent.
+responsible for DVRIP listening, snapshots, YOLO confirmation, and the garage
+`private`/`public`/`uncertain` classification. Home Assistant receives the final
+decision and its source and decides whether a notification should be sent.
 
 1. Install the Mosquitto Broker app and MQTT integration in Home Assistant.
 2. Create a dedicated broker user for this application.

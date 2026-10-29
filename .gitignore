@@ -6,6 +6,7 @@ __pycache__/
 dist/
 .DS_Store
 events/
+logs/
 dataset/
 models/
 smart-monitor.json
