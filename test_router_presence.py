@@ -254,6 +254,29 @@ class RouterPresenceTests(unittest.TestCase):
         lines = [str(call.args[0]) for call in log.call_args_list]
         self.assertFalse(any("Daniel iPhone disconnected" in line for line in lines))
 
+    def test_poll_attributes_include_each_phone_and_router(self):
+        monitor = object.__new__(RouterPresenceMonitor)
+        monitor.devices = {
+            "Daniel iPhone": {"11:22:33:44:55:66"},
+            "Second iPhone": {"aa:bb:cc:dd:ee:ff"},
+        }
+        source = MagicMock()
+        source.poll.return_value = PresenceObservation(
+            "router", True, True, matched_macs=("11:22:33:44:55:66",),
+        )
+        monitor.sources = [source]
+        monitor.publish = MagicMock()
+        monitor._report_transitions = MagicMock()
+
+        state, attributes = monitor.poll_once()
+
+        self.assertEqual(state, "home")
+        self.assertEqual(
+            attributes["devices"],
+            {"Daniel iPhone": True, "Second iPhone": False},
+        )
+        self.assertTrue(attributes["sources"]["router"]["available"])
+
 
 if __name__ == "__main__":
     unittest.main()

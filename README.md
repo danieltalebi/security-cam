@@ -92,12 +92,24 @@ The assistant uses Windows user environment variables because they are simple, w
 
 The same `CAMERA_<NAME>_USER` and `CAMERA_<NAME>_PASSWORD` are used for both DVRIP and ONVIF. There are no separate DVRIP credential variables to keep in sync.
 
-It notifies only for people classified as `private`. Every result is retained
+It never notifies for people confirmed as `public`; `private` and `uncertain`
+results are evaluated by the current local alarm mode. Every result is retained
 under the configured review directory in `private`, `public`, or `uncertain`
 folders. Notification text includes the evidence source. Press `Ctrl+C` in its
 terminal window to stop it.
 
-To pause Telegram alerts, send the bot a duration such as `10m`, `1h`, or `1h30m`. Send `status` to see the remaining pause or `resume` to enable alerts immediately. Only messages from the configured Telegram chat are accepted. Detection and local event saving continue while alerts are paused, and the pause survives monitor restarts.
+The alarm controller runs locally in Python on Windows, macOS, and Linux. Its
+automatic mode disarms from 08:30 to 23:00 when a configured phone is home,
+uses `armed_home` overnight, and selects `armed_away` after five continuous
+minutes of router-confirmed absence. Unknown router state preserves the current
+mode. Manual `disarmed`, `armed_home`, and `armed_away` selections persist.
+
+Telegram accepts `/auto`, `/manual`, `/away`, `/home`, `/disarm`, `/status`,
+`/resume`, `/until8`, `OK`, and durations such as `10m`, `1h`, or `1h30m`.
+Only messages from the configured chat are accepted. Detections and local
+evidence continue while alerts are paused or disarmed, and all operator state is
+stored atomically in the ignored `.security-cam-state.json` file. Credentials
+remain in environment variables or the platform credential store.
 
 Camera connectivity is monitored through the DVRIP event connection, including
 a watchdog that reconnects when keepalive responses stop. The multi-camera
@@ -117,10 +129,12 @@ not pause these health messages.
 
 #### Home Assistant via MQTT
 
-MQTT is the recommended notification backend. The camera process remains
-responsible for DVRIP listening, snapshots, YOLO confirmation, and the garage
-`private`/`public`/`uncertain` classification. Home Assistant receives the final
-decision and its source and decides whether a notification should be sent.
+Home Assistant is an optional mirror, not the alarm authority. The Python
+process owns presence/time transitions, manual modes, notification pauses,
+camera policy, incident grouping, acknowledgements, and progressive retry
+backoff. MQTT receives presence, camera availability, detections, and the local
+alarm state. If the broker or Home Assistant is unavailable, monitoring,
+evidence, Telegram controls, and the Windows dashboard continue to work.
 
 1. Install the Mosquitto Broker app and MQTT integration in Home Assistant.
 2. Create a dedicated broker user for this application.
@@ -136,17 +150,19 @@ HA_MQTT_PASSWORD=...
 
 Using a DNS name for `HA_MQTT_HOST` means that moving Home Assistant to another VM only requires updating DNS. Otherwise, change this one variable. Camera images and event entities are added automatically through MQTT discovery.
 
-Home Assistant publishes its active alarm mode back to the monitor on the
-retained `security_cam/alarm/mode` topic. While that mode is `armed_home` or
-`armed_away`, every backyard DVRIP `Start` event triggers visual verification:
-the monitor checks a JPEG snapshot with YOLO first, then samples a short RTSP
-window when the snapshot does not confirm a person. Confirmed people become
-incidents; negative checks are saved under the camera review directory without
-notifying. When neither source can provide evidence, Home Assistant sends a
-rate-limited technical warning. With the alarm disarmed, backyard triggers are
-ignored before any image or stream is requested.
+The monitor publishes its authoritative mode to retained
+`security_cam/alarm/mode` and the complete state to
+`security_cam/alarm/state`. Every DVRIP `Start` event still performs visual
+verification and saves evidence, including while disarmed. The local policy
+then decides whether it can open or update an incident. Technical verification,
+camera, router, and Internet failures bypass detection pauses and alarm modes.
 
-Copy `home-assistant/security_cam_package.yaml` into the Home Assistant packages directory. The package:
+MQTT discovery creates camera/event entities plus
+`sensor.security_camera_alarm_mode`, whose attributes contain control,
+presence, pause, and active-incident state. The older
+`home-assistant/security_cam_package.yaml` is retained as a migration reference;
+do not enable its legacy policy/Telegram automations alongside the local
+controller. The local controller:
 
 - exposes disarmed, armed-home, and armed-away notification behavior;
 - provides persistent automatic and manual alarm control;
@@ -155,14 +171,14 @@ Copy `home-assistant/security_cam_package.yaml` into the Home Assistant packages
 - never notifies for a garage result confirmed as `public`;
 - groups qualifying detections from each camera into one incident that closes after 60 seconds without another detection;
 - repeats armed incident alerts with progressive backoff until that incident is acknowledged;
-- enables the interior presence sensor only while armed and nobody is home;
-- provides 15-minute, one-hour, indefinite-pause, and resume scripts;
+- alerts for sources marked `role: interior` only in `armed_away`;
+- provides duration, until-08:00, and resume controls;
 - keeps detection and local evidence capture running while notifications are paused.
 
-`home-assistant/security_cam_dashboard.yaml` is a built-in Lovelace dashboard
-for controlling automatic/manual modes, arming, notification pauses, incident
-acknowledgement, camera snapshots, presence, and diagnostics. It uses no custom
-frontend cards.
+`home-assistant/security_cam_dashboard.yaml` targets that legacy package. Use
+the MQTT-discovered local alarm sensor and camera/event entities for a new
+read-only Home Assistant dashboard; use the Windows app or Telegram for local
+controls.
 
 #### Router-backed presence
 
@@ -231,10 +247,11 @@ variables, which makes them available to LaunchAgents without plaintext files.
 The supported router readers are `asuswrt` and the Huawei HG8245 family web
 interface. Private Wi-Fi addresses on an iPhone should be set to `Fixed` for
 each home SSID, and every resulting MAC should be listed under the appropriate
-router. The Home Assistant package waits for five continuous minutes of
+router. The local Python policy waits for five continuous minutes of
 router-confirmed absence before applying `armed_away`; reconnection to either
-router restores the time-appropriate home mode immediately. GPS is displayed
-for diagnostics but no longer overrides router-confirmed presence.
+router restores the time-appropriate home mode immediately. Home Assistant and
+GPS may be displayed for diagnostics but do not override router-confirmed
+presence.
 
 Create `/media/security-cam` on the Home Assistant host and allow `/media` in `configuration.yaml` if it is not already allowed:
 
@@ -245,7 +262,13 @@ homeassistant:
     - /media
 ```
 
-Configure the Home Assistant Telegram Bot integration before enabling the automation. The package uses the first configured Telegram chat by default. Use the `Polling` platform when Telegram should also control the alarm; `Broadcast` can only send alerts. Send `/auto` to enable the occupancy/time policy. Send `/manual` to freeze the current mode, or select a persistent manual mode with `/away`, `/home`, or `/disarm`. The legacy `/arm` command chooses armed-away when nobody is home and armed-home otherwise, and switches to manual control. Use `10m`, `1h`, or `1h30m` to pause notifications, `/status` to inspect the controller, active mode, and incidents, `/resume` to resume immediately, or `/until8` to pause until 08:00. Reply with the plain word `OK`, or press an alert's inline `OK` button, to acknowledge the most recently notified active incident without disarming the system. Each incident becomes new again only after 60 seconds without a qualifying detection. Telegram reports alarm-mode and system-health changes, but detections received while disarmed remain silent. Do not run two polling consumers for the same bot when using the temporary `both` output mode.
+Use the bot configured directly in the camera JSON for alarm commands. Do not
+run a second Home Assistant polling consumer for the same bot. Each incident is
+grouped per camera, becomes new again after 60 seconds without qualifying
+activity, repeats with progressive backoff, and is silenced by `OK` until it
+closes. The Windows app exposes the same Auto, Disarm, Home, Away, pause,
+resume, and acknowledgement controls and shows phone, router, camera, and
+incident state.
 
 #### Camera addresses that survive router restarts
 

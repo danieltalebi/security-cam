@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
+from typing import Callable
 from urllib.request import Request, urlopen
 
 
@@ -60,6 +61,7 @@ class TelegramNotifier:
         self.state_file = Path(state_file).resolve()
         self._state_lock = threading.Lock()
         self._listener_started = False
+        self._command_handler: Callable[[str], str | None] | None = None
         self._muted_until = 0.0
         self._update_offset: int | None = None
         self._load_state()
@@ -95,10 +97,11 @@ class TelegramNotifier:
             self._save_state()
 
     def send_photo(self, image: bytes, caption: str) -> bool:
-        muted, remaining = self.is_muted()
-        if muted:
-            print(f"Telegram notification muted ({format_duration(remaining)} remaining)")
-            return False
+        if self._command_handler is None:
+            muted, remaining = self.is_muted()
+            if muted:
+                print(f"Telegram notification muted ({format_duration(remaining)} remaining)")
+                return False
         boundary = "----securitycam" + uuid.uuid4().hex
         parts = [
             f"--{boundary}\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n{self.chat_id}\r\n".encode(),
@@ -129,10 +132,11 @@ class TelegramNotifier:
 
     def send_notification_message(self, text: str) -> bool:
         """Send an alert text unless notifications are currently muted."""
-        muted, remaining = self.is_muted()
-        if muted:
-            print(f"Telegram notification muted ({format_duration(remaining)} remaining)")
-            return False
+        if self._command_handler is None:
+            muted, remaining = self.is_muted()
+            if muted:
+                print(f"Telegram notification muted ({format_duration(remaining)} remaining)")
+                return False
         self.send_message(text)
         return True
 
@@ -158,6 +162,11 @@ class TelegramNotifier:
             return
         text = str(message.get("text", "")).strip()
         command = re.sub(r"^(/[a-z]+)@[a-z0-9_]+", r"\1", text.lower())
+        if self._command_handler is not None:
+            response = self._command_handler(command)
+            if response is not None:
+                self.send_message(response)
+                return
         if command in {"resume", "/resume", "unmute", "/unmute"}:
             self.resume()
             self.send_message("Notifications resumed.")
@@ -175,6 +184,11 @@ class TelegramNotifier:
             self.send_message(f"Notifications paused for {format_duration(seconds)}. Send resume to enable them early.")
             return
         self.send_message("Send a duration such as 10m, 1h, or 1h30m. Send status or resume at any time.")
+
+    def set_command_handler(self, handler: Callable[[str], str | None]) -> "TelegramNotifier":
+        """Delegate alarm commands to the local policy controller."""
+        self._command_handler = handler
+        return self
 
     def _listen(self) -> None:
         while True:

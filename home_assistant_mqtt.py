@@ -46,6 +46,7 @@ class HomeAssistantMQTT:
         self._registered: dict[str, str] = {}
         self._camera_status: dict[str, bool] = {}
         self._presence_state: tuple[str, dict] | None = None
+        self._local_alarm_state: dict | None = None
         self._alarm_mode: str | None = None
         self._alarm_mode_lock = threading.Lock()
 
@@ -96,8 +97,11 @@ class HomeAssistantMQTT:
                 qos=self.qos, retain=True,
             )
         self._publish_presence_discovery()
+        self._publish_alarm_discovery()
         if self._presence_state:
             self.publish_presence(*self._presence_state)
+        if self._local_alarm_state:
+            self.publish_alarm_state(self._local_alarm_state)
 
     def _on_disconnect(self, _client, _userdata, _disconnect_flags, _reason_code, _properties) -> None:
         self._connected.clear()
@@ -114,7 +118,7 @@ class HomeAssistantMQTT:
             return
         with self._alarm_mode_lock:
             self._alarm_mode = mode
-        print(f"Home Assistant alarm mode: {mode}")
+        print(f"MQTT alarm mode mirror received: {mode}")
 
     @property
     def alarm_mode(self) -> str | None:
@@ -122,8 +126,87 @@ class HomeAssistantMQTT:
             return self._alarm_mode
 
     def should_verify_camera_events(self) -> bool:
-        """Fail safe while retained Home Assistant state is still arriving."""
-        return self.alarm_mode != "disarmed"
+        """Compatibility shim: evidence capture is never gated by Home Assistant."""
+        return True
+
+    def publish_alarm_state(self, state: dict) -> None:
+        """Mirror the authoritative local alarm state into Home Assistant."""
+        mode = str(state.get("mode", "disarmed"))
+        if mode not in ALARM_MODES:
+            raise ValueError(f"Unsupported local alarm mode: {mode!r}")
+        payload = {
+            "mode": mode,
+            "control": state.get("control", "automatic"),
+            "presence": state.get("presence", "unavailable"),
+            "presence_devices": state.get("presence_devices", {}),
+            "notifications_paused": bool(state.get("notifications_paused", False)),
+            "active_incidents": [
+                {
+                    "id": item.get("id"),
+                    "camera": item.get("camera"),
+                    "classification": item.get("classification"),
+                    "acknowledged": bool(item.get("acknowledged")),
+                }
+                for item in state.get("active_incidents", [])
+            ],
+            "updated_at": state.get("updated_at"),
+        }
+        self._local_alarm_state = payload
+        if not self._connected.is_set():
+            return
+        self.client.publish(self._topic("alarm", "mode"), mode, qos=self.qos, retain=True)
+        self.client.publish(
+            self._topic("alarm", "state"),
+            json.dumps(payload, separators=(",", ":")), qos=self.qos, retain=True,
+        )
+
+    def publish_incident(self, incident: dict, event_type: str) -> None:
+        """Publish local incident lifecycle events without influencing policy."""
+        if not self._connected.is_set():
+            return
+        payload = dict(incident)
+        payload["event_type"] = event_type
+        self.client.publish(
+            self._topic("alarm", "incident"),
+            json.dumps(payload, separators=(",", ":")), qos=self.qos, retain=False,
+        )
+
+    def _publish_alarm_discovery(self) -> None:
+        if not self._connected.is_set():
+            return
+        device = {
+            "identifiers": ["security_camera_local_alarm"],
+            "name": "Security camera local alarm",
+            "manufacturer": "security-cam",
+            "model": "Python alarm policy",
+        }
+        sensor = {
+            "name": "Alarm mode",
+            "unique_id": "security_camera_local_alarm_mode",
+            "default_entity_id": "sensor.security_camera_alarm_mode",
+            "state_topic": self._topic("alarm", "mode"),
+            "json_attributes_topic": self._topic("alarm", "state"),
+            "availability_topic": self._topic("app", "status"),
+            "icon": "mdi:shield-home",
+            "device": device,
+        }
+        event = {
+            "name": "Incident lifecycle",
+            "unique_id": "security_camera_local_incident",
+            "default_entity_id": "event.security_camera_incident",
+            "state_topic": self._topic("alarm", "incident"),
+            "event_types": ["incident_notified"],
+            "availability_topic": self._topic("app", "status"),
+            "device": device,
+        }
+        self.client.publish(
+            f"{self.discovery_prefix}/sensor/security_camera_local_alarm/mode/config",
+            json.dumps(sensor), qos=self.qos, retain=True,
+        )
+        self.client.publish(
+            f"{self.discovery_prefix}/event/security_camera_local_alarm/incident/config",
+            json.dumps(event), qos=self.qos, retain=True,
+        )
 
     def register_camera(self, name: str) -> None:
         slug = mqtt_slug(name)

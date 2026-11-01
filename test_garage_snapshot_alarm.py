@@ -22,6 +22,7 @@ class GarageSnapshotAlarmTests(unittest.TestCase):
         alarm.model.predict.return_value = [result]
         alarm.save_result = MagicMock()
         alarm.publish_detection = MagicMock()
+        alarm.register_local_detection = MagicMock()
         alarm.notify_private = MagicMock()
         alarm.fallback = MagicMock()
         return alarm
@@ -74,6 +75,24 @@ class GarageSnapshotAlarmTests(unittest.TestCase):
 
         alarm.fallback.assert_called_once_with(occurred_at)
         alarm.publish_detection.assert_not_called()
+
+    def test_uncertain_snapshot_is_kept_when_rtsp_cannot_refine_it(self):
+        alarm = self.alarm()
+        frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        alarm.fetch_snapshot = MagicMock(return_value=frame)
+        alarm.analyze = MagicMock(return_value=("uncertain", frame, 1))
+        alarm.save_result.return_value = "uncertain.jpg"
+        alarm.fallback.return_value = False
+        occurred_at = MagicMock()
+
+        alarm._handle_event(occurred_at)
+
+        alarm.publish_detection.assert_called_once_with(
+            frame, "image", "uncertain", 1, occurred_at,
+        )
+        alarm.register_local_detection.assert_called_once_with(
+            "uncertain", "uncertain.jpg", occurred_at,
+        )
 
 
 if __name__ == "__main__":

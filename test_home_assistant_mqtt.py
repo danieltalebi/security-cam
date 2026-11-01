@@ -51,7 +51,7 @@ class HomeAssistantMQTTTests(unittest.TestCase):
         self.assertEqual((topic, payload), ("security_cam/garage/status", "offline"))
         self.assertTrue(options["retain"])
 
-    def test_alarm_mode_is_subscribed_and_controls_verification(self):
+    def test_received_alarm_mode_is_mirrored_but_never_gates_verification(self):
         self.bridge._on_connect(None, None, None, 0, None)
         self.client.subscribe.assert_called_with("security_cam/alarm/mode", qos=1)
         self.assertTrue(self.bridge.should_verify_camera_events())
@@ -59,7 +59,7 @@ class HomeAssistantMQTTTests(unittest.TestCase):
         message = MagicMock(topic="security_cam/alarm/mode", payload=b"disarmed")
         self.bridge._on_message(None, None, message)
         self.assertEqual(self.bridge.alarm_mode, "disarmed")
-        self.assertFalse(self.bridge.should_verify_camera_events())
+        self.assertTrue(self.bridge.should_verify_camera_events())
 
         message.payload = b"armed_away"
         self.bridge._on_message(None, None, message)
@@ -76,6 +76,22 @@ class HomeAssistantMQTTTests(unittest.TestCase):
         payload = json.loads(raw_payload)
         self.assertEqual(payload["event_type"], "verification_failed")
         self.assertEqual(payload["camera_slug"], "backyard")
+
+    def test_local_alarm_state_is_published_as_authoritative_mirror(self):
+        self.bridge.publish_alarm_state({
+            "mode": "armed_home",
+            "control": "automatic",
+            "presence": "home",
+            "presence_devices": {"phone": True},
+            "notifications_paused": False,
+            "active_incidents": [],
+        })
+        self.assertEqual(self.published[-2][:2], ("security_cam/alarm/mode", "armed_home"))
+        self.assertTrue(self.published[-2][2]["retain"])
+        topic, raw, options = self.published[-1]
+        self.assertEqual(topic, "security_cam/alarm/state")
+        self.assertEqual(json.loads(raw)["control"], "automatic")
+        self.assertTrue(options["retain"])
 
 
 class CameraHostTests(unittest.TestCase):

@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from telegram_notify import TelegramNotifier, format_duration, parse_duration
 
@@ -31,6 +32,19 @@ class TelegramCommandTests(unittest.TestCase):
 
             restored.resume()
             self.assertFalse(TelegramNotifier("token", "123", state_file).is_muted()[0])
+
+    def test_local_alarm_handler_receives_commands(self):
+        notifier = TelegramNotifier("token", "123")
+        handler = MagicMock(return_value="local response")
+        notifier.set_command_handler(handler)
+        notifier.send_message = MagicMock()
+
+        notifier._handle_command({
+            "message": {"chat": {"id": 123}, "text": "/away"},
+        })
+
+        handler.assert_called_once_with("/away")
+        notifier.send_message.assert_called_once_with("local response")
 
 
 if __name__ == "__main__":

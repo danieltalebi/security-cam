@@ -441,6 +441,7 @@ class RouterPresenceMonitor:
                 observation = self._retry_discovered_asus(source, observation)
             observations.append(observation)
         state = combined_presence(observations)
+        devices = self._device_states(observations)
         attributes = {
             "checked_at": datetime.now().astimezone().isoformat(),
             "sources": {
@@ -451,27 +452,33 @@ class RouterPresenceMonitor:
                 }
                 for item in observations
             },
+            "devices": devices,
         }
         self.publish(state, attributes)
         self._report_transitions(state, observations)
         return state, attributes
 
-    def _report_transitions(
-        self, state: str, observations: list[PresenceObservation], now: float | None = None,
-    ) -> None:
-        now = time.time() if now is None else now
+    def _device_states(self, observations: list[PresenceObservation]) -> dict[str, bool | None]:
+        """Return each configured phone's state without guessing during router outages."""
         sources = {item.name: item.available for item in observations}
         matched = {
             mac
             for item in observations if item.available
             for mac in item.matched_macs
         }
-        any_source_available = any(sources.values())
         all_sources_available = bool(sources) and all(sources.values())
-        devices = {
+        return {
             name: True if macs & matched else False if all_sources_available else None
             for name, macs in self.devices.items()
         }
+
+    def _report_transitions(
+        self, state: str, observations: list[PresenceObservation], now: float | None = None,
+    ) -> None:
+        now = time.time() if now is None else now
+        sources = {item.name: item.available for item in observations}
+        any_source_available = any(sources.values())
+        devices = self._device_states(observations)
 
         if self._last_sources is None:
             source_summary = ", ".join(

@@ -23,14 +23,15 @@ class PresenceAlarmTests(unittest.TestCase):
         alarm.verification_lock = threading.Lock()
         return alarm
 
-    def test_disarmed_alarm_ignores_start_before_spawning_worker(self):
+    def test_disarmed_home_assistant_state_does_not_prevent_local_evidence_worker(self):
         alarm = self.bare_alarm()
         alarm.home_assistant.should_verify_camera_events.return_value = False
 
         with patch("multi_camera_monitor.threading.Thread") as thread:
             alarm.handle_event({"type": "motion", "status": "Start"})
 
-        thread.assert_not_called()
+        thread.assert_called_once()
+        thread.return_value.start.assert_called_once()
 
     def test_armed_alarm_accepts_any_dvrip_start_type(self):
         alarm = self.bare_alarm()
@@ -98,6 +99,24 @@ class PresenceAlarmTests(unittest.TestCase):
         self.assertNotIn("camera-user", reason)
         self.assertNotIn("camera-password", reason)
         self.assertIn("<redacted>", reason)
+
+    def test_local_policy_receives_confirmed_detection_without_home_assistant(self):
+        alarm = self.bare_alarm()
+        alarm.home_assistant = None
+        alarm.policy = MagicMock()
+        alarm.role = "interior"
+        alarm.notifier = MagicMock()
+        occurred_at = MagicMock()
+
+        alarm.publish_confirmed(
+            np.zeros((8, 8, 3), dtype=np.uint8), "image", 1,
+            occurred_at, "evidence.jpg",
+        )
+
+        alarm.policy.record_detection.assert_called_once_with(
+            "backyard", "interior", "presence", "evidence.jpg", occurred_at,
+        )
+        alarm.notifier.send_photo.assert_not_called()
 
 
 if __name__ == "__main__":

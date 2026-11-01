@@ -22,6 +22,7 @@ from timestamp_logging import install_timestamped_logging
 from camera_config import camera_name, credentials, dvrip_endpoint, expand_host, required_env, rtsp_url
 
 if TYPE_CHECKING:
+    from alarm_policy import AlarmPolicyController
     from home_assistant_mqtt import HomeAssistantMQTT
 
 
@@ -39,6 +40,8 @@ class PresenceAlarm:
         notifier: TelegramNotifier | None = None,
         home_assistant: "HomeAssistantMQTT | None" = None,
         stream: str | None = None,
+        policy: "AlarmPolicyController | None" = None,
+        role: str = "exterior",
     ):
         self.name, self.config = name, config
         self.user, self.password = credentials(config, name)
@@ -49,6 +52,8 @@ class PresenceAlarm:
         self.notifier = notifier
         self.home_assistant = home_assistant
         self.stream = stream
+        self.policy = policy
+        self.role = role
         confirmation = config.get("confirmation", {})
         self.confidence = float(confirmation.get("confidence", 0.5))
         self.video_seconds = float(confirmation.get("video_fallback_seconds", 8))
@@ -66,9 +71,6 @@ class PresenceAlarm:
 
     def handle_event(self, event: dict) -> None:
         if event.get("status") != "Start":
-            return
-        if self.home_assistant and not self.home_assistant.should_verify_camera_events():
-            print(f"{self.name}: DVRIP {event.get('type', 'unknown')} ignored while alarm is disarmed")
             return
         with self.event_lock:
             now = time.monotonic()
@@ -129,7 +131,10 @@ class PresenceAlarm:
         finally:
             capture.release()
 
-    def publish_confirmed(self, frame: np.ndarray, source: str, count: int, occurred_at: datetime) -> None:
+    def publish_confirmed(
+        self, frame: np.ndarray, source: str, count: int, occurred_at: datetime,
+        evidence_path: str | Path | None = None,
+    ) -> None:
         data = self.jpeg(frame)
         mqtt_published = False
         if self.home_assistant:
@@ -140,6 +145,14 @@ class PresenceAlarm:
                 mqtt_published = True
             except Exception as error:
                 print(f"{self.name}: Home Assistant MQTT publish failed: {type(error).__name__}: {error}")
+        policy = getattr(self, "policy", None)
+        if policy is not None:
+            policy.record_detection(
+                self.name, getattr(self, "role", "exterior"), "presence",
+                evidence_path, occurred_at,
+            )
+            print(f"{self.name}: person confirmed via {source}" + (" and published" if mqtt_published else ""))
+            return
         if self.notifier is None:
             print(f"{self.name}: person confirmed via {source}" + (" and published" if mqtt_published else ""))
             return
@@ -163,8 +176,10 @@ class PresenceAlarm:
                 self.home_assistant.publish_verification_failure(self.name, reason, occurred_at)
             except Exception as error:
                 print(f"{self.name}: failure event publish failed: {type(error).__name__}: {error}")
-        elif self.notifier:
-            self.notifier.send_notification_message(
+        if self.notifier:
+            # Verification failures are technical alerts and bypass detection
+            # pauses and disarmed modes.
+            self.notifier.send_message(
                 f"⚠️ {self.name}: DVRIP event received but visual verification failed. {reason}"
             )
 
@@ -181,8 +196,8 @@ class PresenceAlarm:
                 evidence_seen = True
                 annotated, count = self.analyze(frame)
                 if count:
-                    self.save_result(annotated, "confirmed", "image", count, occurred_at)
-                    self.publish_confirmed(annotated, "image", count, occurred_at)
+                    evidence_path = self.save_result(annotated, "confirmed", "image", count, occurred_at)
+                    self.publish_confirmed(annotated, "image", count, occurred_at, evidence_path)
                     return
                 self.save_result(annotated, "rejected", "image", 0, occurred_at)
             except Exception as error:
@@ -193,8 +208,8 @@ class PresenceAlarm:
                     evidence_seen = True
                     annotated, count = self.analyze(frame)
                     if count:
-                        self.save_result(annotated, "confirmed", "video", count, occurred_at)
-                        self.publish_confirmed(annotated, "video", count, occurred_at)
+                        evidence_path = self.save_result(annotated, "confirmed", "video", count, occurred_at)
+                        self.publish_confirmed(annotated, "video", count, occurred_at, evidence_path)
                         return
                 if not self.stream:
                     errors.append("RTSP fallback is not configured")
@@ -269,6 +284,13 @@ def main() -> None:
     load_windows_user_environment()
     multi_path = Path(args.config).resolve()
     multi = load_config(multi_path)
+    from alarm_policy import AlarmPolicyController
+
+    policy_config = dict(multi.get("alarm_policy", {}))
+    state_path = Path(policy_config.get("state_file", ".security-cam-state.json"))
+    if not state_path.is_absolute():
+        state_path = multi_path.parent / state_path
+    policy = AlarmPolicyController(policy_config, state_path)
     listeners: list[DVRIPAlarmListener] = []
     connectivity_alerts: list[CameraConnectivityAlerts] = []
     output_mode = str(multi.get("outputs", {}).get("mode", "telegram")).lower()
@@ -278,6 +300,8 @@ def main() -> None:
     presence_monitor = None
     internet_monitor = None
     system_notifier = technical_notifier(multi, multi_path)
+    if system_notifier:
+        system_notifier = system_notifier.start_command_listener().set_command_handler(policy.handle_command)
     health_config = multi.get("health", {})
     camera_thresholds = tuple(
         float(value)
@@ -301,24 +325,36 @@ def main() -> None:
             failure_threshold=int(health_config.get("internet_failure_threshold", 2)),
         ).start()
     if output_mode in {"mqtt", "both"}:
-        from home_assistant_mqtt import HomeAssistantMQTT
-
         try:
+            from home_assistant_mqtt import HomeAssistantMQTT
             home_assistant = HomeAssistantMQTT(multi.get("home_assistant", {}).get("mqtt", {})).start()
         except Exception as error:
-            if output_mode == "mqtt":
-                raise
-            print(f"Home Assistant MQTT unavailable; continuing with Telegram: {type(error).__name__}: {error}")
+            print(f"Home Assistant MQTT unavailable; local alarm remains active: {type(error).__name__}: {error}")
 
     presence_config = multi.get("presence", {})
-    if home_assistant and presence_config.get("enabled", False):
+    if presence_config.get("enabled", False):
         from router_presence import RouterPresenceMonitor
+        last_policy_summary = None
+
+        def publish_presence(state: str, attributes: dict) -> None:
+            nonlocal last_policy_summary
+            mode = policy.observe_presence(state, attributes)
+            summary = (mode, policy.snapshot()["control"])
+            if summary != last_policy_summary:
+                print(f"Local alarm mode: {summary[0]} ({summary[1]})")
+                last_policy_summary = summary
+            if home_assistant:
+                try:
+                    home_assistant.publish_presence(state, attributes)
+                except Exception as error:
+                    print(f"Home Assistant presence publish failed: {type(error).__name__}: {error}")
 
         presence_monitor = RouterPresenceMonitor(
-            presence_config, home_assistant.publish_presence,
+            presence_config, publish_presence,
             notify=system_notifier.send_message if system_notifier else None,
         ).start()
 
+    notification_channels: dict[str, TelegramNotifier] = {}
     for entry in multi.get("cameras", []):
         name = entry.get("name")
         mode = entry["mode"]
@@ -331,23 +367,29 @@ def main() -> None:
             telegram = config["telegram"]
             notifier = TelegramNotifier(
                 required_env(telegram["token_env"]), required_env(telegram["chat_id_env"]),
-            ).start_command_listener()
+            ).start_command_listener().set_command_handler(policy.handle_command)
+        notification_channel = notifier or system_notifier
+        if notification_channel:
+            notification_channels[name] = notification_channel
         if home_assistant:
             home_assistant.register_camera(name)
+        role = str(entry.get("role") or ("interior" if "interior" in name.lower() else "exterior")).lower()
+        if role not in {"interior", "exterior"}:
+            raise RuntimeError(f"{name}: role must be interior or exterior.")
         if mode == "property":
             stream = os.environ.get(entry["stream_env"]) if entry.get("stream_env") else rtsp_url(config, name)
             if not stream:
                 raise RuntimeError(f"{name}: its CAMERA_<NAME>_RTSP_URL environment variable is not set.")
             alarm = SmartAlarm(
-                config, stream, notifier=notifier,
-                home_assistant=home_assistant, name=name,
+                config, stream, notifier=notification_channel,
+                home_assistant=home_assistant, name=name, policy=policy, role=role,
             )
             handler = alarm.handle_event
         elif mode == "presence":
             stream = os.environ.get(entry["stream_env"]) if entry.get("stream_env") else rtsp_url(config, name)
             alarm = PresenceAlarm(
-                name, config, notifier=notifier,
-                home_assistant=home_assistant, stream=stream,
+                name, config, notifier=notification_channel,
+                home_assistant=home_assistant, stream=stream, policy=policy, role=role,
             )
             handler = alarm.handle_event
         else:
@@ -384,10 +426,46 @@ def main() -> None:
     # launchd stops a LaunchAgent with SIGTERM. Handle it as a clean shutdown
     # so MQTT publishes its offline state and camera listener threads close.
     previous_sigterm = signal.signal(signal.SIGTERM, request_stop)
+    last_mqtt_state = None
+    print(f"Local alarm initialized: {policy.snapshot()['mode']} ({policy.snapshot()['control']})")
     print("Monitoring all cameras. Press Ctrl+C to stop.")
     try:
         while not stop_event.wait(1):
-            pass
+            policy.tick()
+            state = policy.snapshot()
+            mqtt_state = json.dumps({
+                "mode": state["mode"],
+                "control": state["control"],
+                "presence": state["presence"],
+                "notifications_paused": state["notifications_paused"],
+                "active_incidents": [
+                    (item.get("id"), item.get("acknowledged"), item.get("notification_count"))
+                    for item in state["active_incidents"]
+                ],
+            }, sort_keys=True)
+            if home_assistant and mqtt_state != last_mqtt_state:
+                try:
+                    home_assistant.publish_alarm_state(state)
+                    last_mqtt_state = mqtt_state
+                except Exception as error:
+                    print(f"Home Assistant alarm state publish failed: {type(error).__name__}: {error}")
+            for incident in policy.due_notifications():
+                channel = notification_channels.get(str(incident.get("camera"))) or system_notifier
+                evidence_path = incident.get("evidence_path")
+                if not channel or not evidence_path:
+                    continue
+                try:
+                    image = Path(str(evidence_path)).read_bytes()
+                    caption = (
+                        f"🚨 {incident['camera']} · {incident.get('classification', 'detection')} · "
+                        f"incidente {incident['id'][:8]}. Responda OK para reconocer."
+                    )
+                    if channel.send_photo(image, caption):
+                        policy.mark_notified(str(incident["camera"]))
+                        if home_assistant:
+                            home_assistant.publish_incident(incident, "incident_notified")
+                except Exception as error:
+                    print(f"{incident.get('camera')}: incident notification failed: {type(error).__name__}: {error}")
     except KeyboardInterrupt:
         stop_event.set()
     finally:

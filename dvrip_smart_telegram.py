@@ -24,6 +24,7 @@ from camera_config import credentials, dvrip_endpoint, required_env, rtsp_url
 from camera_config import camera_name, expand_host
 
 if TYPE_CHECKING:
+    from alarm_policy import AlarmPolicyController
     from home_assistant_mqtt import HomeAssistantMQTT
 
 
@@ -51,6 +52,7 @@ def load_windows_user_environment() -> None:
                 index += 1
                 if value and (
                     name.startswith("CAMERA_") or name.startswith("HA_MQTT_")
+                    or name.startswith("ASUS_ROUTER_") or name.startswith("HUAWEI_ROUTER_")
                     or name in {"TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID"}
                 ):
                     os.environ[name] = str(value)
@@ -66,6 +68,8 @@ class SmartAlarm:
         notifier: TelegramNotifier | None = None,
         home_assistant: "HomeAssistantMQTT | None" = None,
         name: str | None = None,
+        policy: "AlarmPolicyController | None" = None,
+        role: str = "exterior",
     ):
         self.config, self.stream = config, stream
         self.name = name or camera_name(config)
@@ -75,6 +79,8 @@ class SmartAlarm:
         self.username, self.password = credentials(config, self.name)
         self.telegram = notifier
         self.home_assistant = home_assistant
+        self.policy = policy
+        self.role = role
         self.snapshot_url = expand_host(config["snapshot"]["url"], config, self.name)
         self.snapshot_query_auth = bool(config["snapshot"].get("xmeye_query_auth", False))
         policy = config["public_area_classifier"]
@@ -167,6 +173,15 @@ class SmartAlarm:
         except Exception as error:
             print(f"Home Assistant MQTT publish failed: {type(error).__name__}: {error}")
 
+    def register_local_detection(
+        self, decision: str, evidence_path: str, occurred_at: datetime,
+    ) -> None:
+        policy = getattr(self, "policy", None)
+        if policy is not None:
+            policy.record_detection(
+                self.name, self.role, decision, evidence_path, occurred_at,
+            )
+
     def fetch_snapshot(self) -> np.ndarray:
         uri = xmeye_snapshot_uri(self.snapshot_url, self.username, self.password) if self.snapshot_query_auth else self.snapshot_url
         data = download_snapshot(uri, self.username, self.password, 6)
@@ -195,7 +210,7 @@ class SmartAlarm:
             if process.poll() is None:
                 process.kill()
 
-    def fallback(self, occurred_at: datetime) -> None:
+    def fallback(self, occurred_at: datetime) -> bool:
         last = None
         last_count = 0
         next_sample = 0.0
@@ -206,16 +221,20 @@ class SmartAlarm:
             decision, annotated, count = self.analyze(frame)
             last, last_count = annotated, count
             if decision != "uncertain":
-                self.save_result(annotated, "video", decision, count, occurred_at)
+                evidence_path = self.save_result(annotated, "video", decision, count, occurred_at)
                 self.publish_detection(annotated, "video", decision, count, occurred_at)
-                if decision == "private":
+                self.register_local_detection(decision, evidence_path, occurred_at)
+                if decision == "private" and getattr(self, "policy", None) is None:
                     self.notify_private(annotated, "video fallback", count)
                 print(f"DVRIP video decision: {decision} ({count} persons)")
-                return
+                return True
         if last is not None:
-            self.save_result(last, "video", "uncertain", last_count, occurred_at)
+            evidence_path = self.save_result(last, "video", "uncertain", last_count, occurred_at)
             self.publish_detection(last, "video", "uncertain", last_count, occurred_at)
+            self.register_local_detection("uncertain", evidence_path, occurred_at)
             print(f"DVRIP video decision: uncertain ({last_count} persons)")
+            return True
+        return False
 
     def handle_event(self, event: dict) -> None:
         if event.get("type") != "person" or event.get("status") != "Start":
@@ -234,13 +253,18 @@ class SmartAlarm:
         try:
             frame = self.fetch_snapshot()
             decision, annotated, count = self.analyze(frame)
-            self.save_result(annotated, "image", decision, count, occurred_at)
+            evidence_path = self.save_result(annotated, "image", decision, count, occurred_at)
             print(f"DVRIP image decision: {decision} ({count} persons)")
             if decision == "uncertain":
-                self.fallback(occurred_at)
+                if self.fallback(occurred_at) is False:
+                    # The snapshot is still valid uncertain evidence when RTSP
+                    # cannot refine it; never silently drop that garage event.
+                    self.publish_detection(annotated, "image", decision, count, occurred_at)
+                    self.register_local_detection(decision, evidence_path, occurred_at)
             else:
                 self.publish_detection(annotated, "image", decision, count, occurred_at)
-                if decision == "private":
+                self.register_local_detection(decision, evidence_path, occurred_at)
+                if decision == "private" and getattr(self, "policy", None) is None:
                     self.notify_private(annotated, "image", count)
         except Exception as error:
             print(f"DVRIP snapshot analysis failed: {type(error).__name__}: {error}")

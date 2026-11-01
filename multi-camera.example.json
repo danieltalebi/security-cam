@@ -22,6 +22,18 @@
     "internet_timeout_seconds": 5,
     "internet_failure_threshold": 2
   },
+  "alarm_policy": {
+    "state_file": ".security-cam-state.json",
+    "automatic": {
+      "day_start": "08:30",
+      "night_start": "23:00",
+      "away_debounce_seconds": 300
+    },
+    "incidents": {
+      "close_after_seconds": 60,
+      "notification_backoff_seconds": [0, 60, 180, 300, 600]
+    }
+  },
   "presence": {
     "enabled": false,
     "poll_interval_seconds": 30,
@@ -60,11 +72,13 @@
     {
       "name": "garage",
       "mode": "property",
+      "role": "exterior",
       "config": "smart-monitor.json"
     },
     {
       "name": "backyard",
       "mode": "presence",
+      "role": "exterior",
       "config": "backyard-monitor.json"
     }
   ]
