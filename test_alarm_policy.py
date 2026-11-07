@@ -179,12 +179,19 @@ class AlarmPolicyTests(unittest.TestCase):
     def test_telegram_command_vocabulary(self):
         clock = Clock(self.local_epoch(12))
         policy = self.controller(clock)
+        self.assertIn("/manual", policy.handle_command("/help"))
         self.assertIn("armed_away", policy.handle_command("/away"))
         self.assertEqual(policy.snapshot()["control"], "manual")
+        self.assertIn("armed_home", policy.handle_command("/home"))
+        self.assertIn("disarmed", policy.handle_command("/disarm"))
+        self.assertIn("manual", policy.handle_command("/manual"))
         self.assertIn("automático", policy.handle_command("/auto"))
         self.assertIn("pausadas", policy.handle_command("1h30m"))
+        self.assertIn("pausadas", policy.handle_command("/pause 10m"))
         self.assertIn("Modo", policy.handle_command("/status"))
         self.assertIn("reanudadas", policy.handle_command("/resume"))
+        self.assertIn("08:00", policy.handle_command("/until8"))
+        self.assertIn("No hay incidentes", policy.handle_command("OK"))
 
 
 if __name__ == "__main__":

@@ -391,6 +391,12 @@ class AlarmPolicyController:
         """Handle the shared Telegram command vocabulary; return None if unknown."""
         normalized = command.strip().lower()
         normalized = re.sub(r"^/", "", normalized)
+        if normalized in {"help", "ayuda", "commands", "comandos"}:
+            return (
+                "Controles: /auto, /manual, /away, /home, /disarm, /status, "
+                "/resume, /until8; pausas: 10m, 1h, 1h30m o /pause 2h; "
+                "responda OK para reconocer el incidente activo."
+            )
         if normalized in {"auto", "automatico", "automático"}:
             mode = self.set_automatic()
             return f"Control automático activado. Modo: {mode}."

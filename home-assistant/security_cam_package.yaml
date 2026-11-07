@@ -38,6 +38,21 @@ template:
 # Home Assistant only bridges the physical sensor and controls the light.
 # Python remains the sole authority for deciding whether presence is an alarm.
 automation:
+  - id: security_camera_lights_off_at_0213_while_away
+    alias: Cameras - lights off at 02:13 while armed away
+    mode: single
+    triggers:
+      - trigger: time
+        at: "02:13:00"
+    conditions:
+      - condition: state
+        entity_id: sensor.security_camera_alarm_mode
+        state: armed_away
+    actions:
+      - action: light.turn_off
+        target:
+          entity_id: all
+
   - id: security_camera_bridge_interior_presence
     alias: Cameras - bridge interior presence to local policy
     mode: queued

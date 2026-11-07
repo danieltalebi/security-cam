@@ -46,6 +46,27 @@ class TelegramCommandTests(unittest.TestCase):
         handler.assert_called_once_with("/away")
         notifier.send_message.assert_called_once_with("local response")
 
+    def test_full_control_commands_are_delegated_to_local_policy(self):
+        notifier = TelegramNotifier("token", "123")
+        handler = MagicMock(side_effect=lambda command: f"handled {command}")
+        notifier.set_command_handler(handler)
+        notifier.send_message = MagicMock()
+
+        commands = (
+            "/help", "/auto", "/manual", "/away", "/home", "/disarm",
+            "/status", "/resume", "/until8", "10m", "1h30m", "OK",
+        )
+        for command in commands:
+            notifier._handle_command({
+                "message": {"chat": {"id": 123}, "text": command},
+            })
+
+        self.assertEqual(
+            [call.args[0] for call in handler.call_args_list],
+            [command.lower() for command in commands],
+        )
+        self.assertEqual(notifier.send_message.call_count, len(commands))
+
 
 if __name__ == "__main__":
     unittest.main()

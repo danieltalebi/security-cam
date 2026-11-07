@@ -201,6 +201,12 @@ text-only acknowledged incident in `armed_away`. While armed away, the package
 also immediately turns off a light whose entity ID or friendly name contains
 `amarill` or `yellow`; other lights are not affected.
 
+When the local mode is `armed_away`, Home Assistant turns off all `light`
+entities at 02:13. The yellow-light guard remains active for the whole away
+period, including motion-sensor activity, so a separate lighting automation
+cannot leave that light on. Home lighting schedules remain unchanged in
+`disarmed` and `armed_home`.
+
 #### Router-backed presence
 
 The monitor can publish `binary_sensor.security_camera_phone_wifi_presence` by
