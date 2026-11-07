@@ -55,6 +55,7 @@ class HomeAssistantMQTTTests(unittest.TestCase):
         self.bridge._on_connect(None, None, None, 0, None)
         self.client.subscribe.assert_any_call("security_cam/alarm/mode", qos=1)
         self.client.subscribe.assert_any_call("security_cam/alarm/command", qos=1)
+        self.client.subscribe.assert_any_call("security_cam/interior/event", qos=1)
         self.assertTrue(self.bridge.should_verify_camera_events())
 
         message = MagicMock(topic="security_cam/alarm/mode", payload=b"disarmed")
@@ -74,6 +75,23 @@ class HomeAssistantMQTTTests(unittest.TestCase):
         self.bridge._on_message(None, None, message)
 
         handler.assert_called_once_with("/away")
+
+    def test_interior_event_uses_local_detection_handler(self):
+        handler = MagicMock(return_value="interior presence accepted")
+        self.assertIs(self.bridge.set_detection_handler(handler), self.bridge)
+        message = MagicMock(
+            topic="security_cam/interior/event",
+            payload=json.dumps({
+                "event_type": "presence_detected",
+                "entity_id": "binary_sensor.sensor_de_presencia_humana_motion",
+                "occurred_at": "2026-11-07T23:30:00+11:00",
+            }).encode(),
+        )
+
+        self.bridge._on_message(None, None, message)
+
+        handler.assert_called_once()
+        self.assertEqual(handler.call_args.args[0]["event_type"], "presence_detected")
 
     def test_alarm_discovery_exposes_operator_buttons_on_command_topic(self):
         self.bridge._publish_alarm_discovery()

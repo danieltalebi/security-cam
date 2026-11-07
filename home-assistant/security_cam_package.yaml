@@ -1,6 +1,6 @@
-# Optional mirror-only helpers for the local Python alarm controller.
+# Optional mirrors and hardware bridges for the local Python alarm controller.
 # MQTT discovery creates the authoritative sensor, cameras, events, and buttons.
-# This package never decides alarm state and never polls Telegram.
+# This package never decides alarm state, opens incidents, or polls Telegram.
 
 template:
   - sensor:
@@ -29,3 +29,64 @@ template:
         state: >-
           {{ state_attr('sensor.security_camera_alarm_mode', 'notifications_paused')
              | default(false, true) | bool }}
+      - name: Security camera yellow light guard
+        unique_id: security_camera_yellow_light_guard
+        icon: mdi:lightbulb-off-outline
+        state: >-
+          {{ is_state('sensor.security_camera_alarm_mode', 'armed_away') }}
+
+# Home Assistant only bridges the physical sensor and controls the light.
+# Python remains the sole authority for deciding whether presence is an alarm.
+automation:
+  - id: security_camera_bridge_interior_presence
+    alias: Cameras - bridge interior presence to local policy
+    mode: queued
+    max: 20
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.sensor_de_presencia_humana_motion
+        from: "off"
+        to: "on"
+    actions:
+      - action: mqtt.publish
+        data:
+          topic: security_cam/interior/event
+          qos: 1
+          retain: false
+          payload: >-
+            {{ {
+              'event_type': 'presence_detected',
+              'entity_id': trigger.entity_id,
+              'occurred_at': now().isoformat()
+            } | to_json }}
+
+  - id: security_camera_keep_yellow_light_off_while_away
+    alias: Cameras - keep yellow light off while armed away
+    mode: queued
+    max: 10
+    triggers:
+      - trigger: event
+        event_type: state_changed
+    variables:
+      changed_entity: "{{ trigger.event.data.entity_id | default('', true) }}"
+      changed_to: >-
+        {{ trigger.event.data.new_state.state
+           if trigger.event.data.new_state is not none else '' }}
+      changed_name: >-
+        {{ trigger.event.data.new_state.attributes.friendly_name | default('', true)
+           if trigger.event.data.new_state is not none else '' }}
+      yellow_light: >-
+        {{ changed_entity.split('.')[0] in ['light', 'switch'] and
+           ('amarill' in ((changed_entity ~ ' ' ~ changed_name) | lower) or
+            'yellow' in ((changed_entity ~ ' ' ~ changed_name) | lower)) }}
+    conditions:
+      - condition: state
+        entity_id: sensor.security_camera_alarm_mode
+        state: armed_away
+      - condition: template
+        value_template: >-
+          {{ yellow_light | bool and changed_to == 'on' }}
+    actions:
+      - action: homeassistant.turn_off
+        target:
+          entity_id: "{{ changed_entity }}"

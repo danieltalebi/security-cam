@@ -75,6 +75,10 @@ views:
           - entity: sensor.security_camera_presence_state
           - entity: sensor.security_camera_active_incidents
           - entity: binary_sensor.security_camera_notifications_paused
+          - entity: binary_sensor.sensor_de_presencia_humana_motion
+            name: Interior human presence
+          - entity: binary_sensor.security_camera_yellow_light_guard
+            name: Yellow light guard
 
   - title: Cameras
     path: cameras

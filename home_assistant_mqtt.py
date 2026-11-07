@@ -51,6 +51,7 @@ class HomeAssistantMQTT:
         self._alarm_mode: str | None = None
         self._alarm_mode_lock = threading.Lock()
         self._command_handler: Callable[[str], str | None] | None = None
+        self._detection_handler: Callable[[dict], str | None] | None = None
 
         client_id = str(config.get("client_id") or f"security-cam-{uuid.uuid4().hex[:8]}")
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
@@ -91,6 +92,7 @@ class HomeAssistantMQTT:
         self._connected.set()
         self.client.subscribe(self._topic("alarm", "mode"), qos=self.qos)
         self.client.subscribe(self._topic("alarm", "command"), qos=self.qos)
+        self.client.subscribe(self._topic("interior", "event"), qos=self.qos)
         self.client.publish(self._topic("app", "status"), "online", qos=self.qos, retain=True)
         for name in list(self._registered.values()):
             self._publish_discovery(name)
@@ -124,6 +126,22 @@ class HomeAssistantMQTT:
             else:
                 print(f"Home Assistant alarm command applied locally: {result}")
             return
+        if message.topic == self._topic("interior", "event"):
+            try:
+                event = json.loads(payload)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                print("Ignoring invalid Home Assistant interior event payload")
+                return
+            if not isinstance(event, dict) or event.get("event_type") != "presence_detected":
+                print("Ignoring unsupported Home Assistant interior event")
+                return
+            if not self._detection_handler:
+                print("Ignoring Home Assistant interior event: no local handler is registered")
+                return
+            result = self._detection_handler(event)
+            if result:
+                print(f"Home Assistant interior event handled locally: {result}")
+            return
         if message.topic == self._topic("alarm", "mode"):
             if payload not in ALARM_MODES:
                 print(f"Ignoring unsupported Home Assistant alarm mode: {payload!r}")
@@ -137,6 +155,13 @@ class HomeAssistantMQTT:
     ) -> "HomeAssistantMQTT":
         """Route explicit HA operator commands into the local controller."""
         self._command_handler = handler
+        return self
+
+    def set_detection_handler(
+        self, handler: Callable[[dict], str | None],
+    ) -> "HomeAssistantMQTT":
+        """Route raw HA sensor events into the local alarm policy."""
+        self._detection_handler = handler
         return self
 
     @property

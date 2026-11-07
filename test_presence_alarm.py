@@ -4,7 +4,9 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
-from multi_camera_monitor import PresenceAlarm
+from multi_camera_monitor import (
+    PresenceAlarm, handle_interior_presence, send_incident_notification,
+)
 
 
 class PresenceAlarmTests(unittest.TestCase):
@@ -117,6 +119,36 @@ class PresenceAlarmTests(unittest.TestCase):
             "backyard", "interior", "presence", "evidence.jpg", occurred_at,
         )
         alarm.notifier.send_photo.assert_not_called()
+
+    def test_home_assistant_interior_event_is_fixed_to_interior_policy_role(self):
+        policy = MagicMock()
+        policy.record_detection.return_value = {"id": "incident"}
+
+        result = handle_interior_presence(policy, {
+            "event_type": "presence_detected",
+            "camera": "untrusted-camera-name",
+            "occurred_at": "2026-11-07T23:30:00+11:00",
+        })
+
+        self.assertIn("accepted", result)
+        self.assertEqual(policy.record_detection.call_args.args[:4], (
+            "interior", "interior", "presence", None,
+        ))
+
+    def test_interior_incident_sends_text_without_fake_evidence(self):
+        channel = MagicMock()
+        channel.send_notification_message.return_value = True
+
+        sent = send_incident_notification(channel, {
+            "id": "1234567890abcdef",
+            "camera": "interior",
+            "classification": "presence",
+            "evidence_path": None,
+        })
+
+        self.assertTrue(sent)
+        channel.send_notification_message.assert_called_once()
+        channel.send_photo.assert_not_called()
 
 
 if __name__ == "__main__":

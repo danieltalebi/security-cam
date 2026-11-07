@@ -277,6 +277,40 @@ def technical_notifier(multi: dict, multi_path: Path) -> TelegramNotifier | None
     return None
 
 
+def handle_interior_presence(policy, event: dict) -> str:
+    """Apply a raw Home Assistant interior sensor event to local policy."""
+    occurred_at = datetime.now().astimezone()
+    raw_time = event.get("occurred_at")
+    if raw_time:
+        try:
+            occurred_at = datetime.fromisoformat(str(raw_time).replace("Z", "+00:00"))
+            if occurred_at.tzinfo is None:
+                occurred_at = occurred_at.astimezone()
+        except ValueError:
+            pass
+    incident = policy.record_detection(
+        "interior", "interior", "presence", None, occurred_at,
+    )
+    if incident:
+        return "interior presence accepted in armed-away mode"
+    return "interior presence ignored by the current local alarm mode"
+
+
+def send_incident_notification(channel: TelegramNotifier, incident: dict) -> bool:
+    """Send image incidents and text-only interior sensor incidents."""
+    evidence_path = incident.get("evidence_path")
+    if evidence_path:
+        caption = (
+            f"🚨 {incident['camera']} · {incident.get('classification', 'detection')} · "
+            f"incidente {incident['id'][:8]}. Responda OK para reconocer."
+        )
+        return channel.send_photo(Path(str(evidence_path)).read_bytes(), caption)
+    return channel.send_notification_message(
+        "🚨 ALARMA FUERA · Presencia detectada por el sensor interior. "
+        f"Incidente {incident['id'][:8]}. Responda OK para reconocer."
+    )
+
+
 def main() -> None:
     install_timestamped_logging()
 
@@ -339,6 +373,7 @@ def main() -> None:
             home_assistant = (
                 HomeAssistantMQTT(multi.get("home_assistant", {}).get("mqtt", {}))
                 .set_command_handler(policy.handle_command)
+                .set_detection_handler(lambda event: handle_interior_presence(policy, event))
                 .start()
             )
         except Exception as error:
@@ -464,16 +499,11 @@ def main() -> None:
                     print(f"Home Assistant alarm state publish failed: {type(error).__name__}: {error}")
             for incident in policy.due_notifications():
                 channel = notification_channels.get(str(incident.get("camera"))) or system_notifier
-                evidence_path = incident.get("evidence_path")
-                if not channel or not evidence_path:
+                if not channel:
                     continue
                 try:
-                    image = Path(str(evidence_path)).read_bytes()
-                    caption = (
-                        f"🚨 {incident['camera']} · {incident.get('classification', 'detection')} · "
-                        f"incidente {incident['id'][:8]}. Responda OK para reconocer."
-                    )
-                    if channel.send_photo(image, caption):
+                    sent = send_incident_notification(channel, incident)
+                    if sent:
                         policy.mark_notified(str(incident["camera"]))
                         if home_assistant:
                             home_assistant.publish_incident({

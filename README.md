@@ -166,9 +166,11 @@ incident acknowledgement. Those buttons publish explicit requests on
 controller used by Windows and Telegram. The retained mode/state topics remain
 mirrors and never become the policy source of truth.
 
-`home-assistant/security_cam_package.yaml` now contains mirror-only template
-entities. It has no alarm-policy or Telegram polling automation, so it is safe
-to enable with the local controller. The local controller:
+`home-assistant/security_cam_package.yaml` contains template mirrors plus small
+hardware bridges for the interior presence sensor and yellow-light guard. It
+has no alarm-policy or Telegram polling automation: Python remains the sole
+decision-maker, so the package is safe to enable with the local controller.
+The local controller:
 
 - exposes disarmed, armed-home, and armed-away notification behavior;
 - provides persistent automatic and manual alarm control;
@@ -191,6 +193,13 @@ Assistant even while disarmed. Automations that represent an actual alert must
 use `event.security_camera_incident`: its `incident_notified` event is emitted
 only after the local policy authorizes and sends the notification, and includes
 the alarm mode, control mode, and presence used for that decision.
+
+The Home Assistant package bridges
+`binary_sensor.sensor_de_presencia_humana_motion` to the local controller over
+MQTT. Python ignores that sensor in `disarmed` and `armed_home`, and creates a
+text-only acknowledged incident in `armed_away`. While armed away, the package
+also immediately turns off a light whose entity ID or friendly name contains
+`amarill` or `yellow`; other lights are not affected.
 
 #### Router-backed presence
 
