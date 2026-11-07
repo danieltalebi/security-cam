@@ -159,10 +159,16 @@ camera, router, and Internet failures bypass detection pauses and alarm modes.
 
 MQTT discovery creates camera/event entities plus
 `sensor.security_camera_alarm_mode`, whose attributes contain control,
-presence, pause, and active-incident state. The older
-`home-assistant/security_cam_package.yaml` is retained as a migration reference;
-do not enable its legacy policy/Telegram automations alongside the local
-controller. The local controller:
+presence, pause, and active-incident state. It also creates operator buttons
+for automatic mode, the three manual modes, one-hour pause, resume, and
+incident acknowledgement. Those buttons publish explicit requests on
+`security_cam/alarm/command`; Python applies them through the same local
+controller used by Windows and Telegram. The retained mode/state topics remain
+mirrors and never become the policy source of truth.
+
+`home-assistant/security_cam_package.yaml` now contains mirror-only template
+entities. It has no alarm-policy or Telegram polling automation, so it is safe
+to enable with the local controller. The local controller:
 
 - exposes disarmed, armed-home, and armed-away notification behavior;
 - provides persistent automatic and manual alarm control;
@@ -175,10 +181,16 @@ controller. The local controller:
 - provides duration, until-08:00, and resume controls;
 - keeps detection and local evidence capture running while notifications are paused.
 
-`home-assistant/security_cam_dashboard.yaml` targets that legacy package. Use
-the MQTT-discovered local alarm sensor and camera/event entities for a new
-read-only Home Assistant dashboard; use the Windows app or Telegram for local
-controls.
+`home-assistant/security_cam_dashboard.yaml` targets the MQTT-discovered
+sensor, cameras, events, and buttons. The dashboard can request operator
+changes, but the resulting state is still computed and persisted locally by
+Python.
+
+Camera `person_detected` events are raw evidence and remain visible in Home
+Assistant even while disarmed. Automations that represent an actual alert must
+use `event.security_camera_incident`: its `incident_notified` event is emitted
+only after the local policy authorizes and sends the notification, and includes
+the alarm mode, control mode, and presence used for that decision.
 
 #### Router-backed presence
 

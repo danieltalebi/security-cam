@@ -53,7 +53,8 @@ class HomeAssistantMQTTTests(unittest.TestCase):
 
     def test_received_alarm_mode_is_mirrored_but_never_gates_verification(self):
         self.bridge._on_connect(None, None, None, 0, None)
-        self.client.subscribe.assert_called_with("security_cam/alarm/mode", qos=1)
+        self.client.subscribe.assert_any_call("security_cam/alarm/mode", qos=1)
+        self.client.subscribe.assert_any_call("security_cam/alarm/command", qos=1)
         self.assertTrue(self.bridge.should_verify_camera_events())
 
         message = MagicMock(topic="security_cam/alarm/mode", payload=b"disarmed")
@@ -64,6 +65,40 @@ class HomeAssistantMQTTTests(unittest.TestCase):
         message.payload = b"armed_away"
         self.bridge._on_message(None, None, message)
         self.assertTrue(self.bridge.should_verify_camera_events())
+
+    def test_explicit_home_assistant_command_uses_local_policy_handler(self):
+        handler = MagicMock(return_value="Control manual. Modo: armed_away.")
+        self.assertIs(self.bridge.set_command_handler(handler), self.bridge)
+
+        message = MagicMock(topic="security_cam/alarm/command", payload=b"/away")
+        self.bridge._on_message(None, None, message)
+
+        handler.assert_called_once_with("/away")
+
+    def test_alarm_discovery_exposes_operator_buttons_on_command_topic(self):
+        self.bridge._publish_alarm_discovery()
+        discovered = {
+            topic: json.loads(payload)
+            for topic, payload, _options in self.published
+            if "/button/security_camera_local_alarm/" in topic
+        }
+        self.assertEqual(len(discovered), 7)
+        self.assertTrue(all(
+            payload["command_topic"] == "security_cam/alarm/command"
+            for payload in discovered.values()
+        ))
+        self.assertEqual(
+            discovered[
+                "homeassistant/button/security_camera_local_alarm/arm_away/config"
+            ]["payload_press"],
+            "/away",
+        )
+        self.assertEqual(
+            discovered[
+                "homeassistant/button/security_camera_local_alarm/pause_1h/config"
+            ]["payload_press"],
+            "1h",
+        )
 
     def test_verification_failure_is_published_as_camera_event(self):
         self.bridge.register_camera("Backyard")
@@ -76,6 +111,32 @@ class HomeAssistantMQTTTests(unittest.TestCase):
         payload = json.loads(raw_payload)
         self.assertEqual(payload["event_type"], "verification_failed")
         self.assertEqual(payload["camera_slug"], "backyard")
+
+    def test_disconnected_detection_is_not_added_to_the_offline_queue(self):
+        self.bridge.register_camera("Backyard")
+        before = len(self.published)
+        self.bridge._connected.clear()
+
+        with self.assertRaisesRegex(ConnectionError, "not queued"):
+            self.bridge.publish_detection(
+                "Backyard", b"jpeg", "presence", 1, "image",
+                datetime(2026, 9, 11, tzinfo=timezone.utc),
+            )
+
+        self.assertEqual(len(self.published), before)
+
+    def test_mqtt_queue_error_is_reported_as_connection_error(self):
+        result = MagicMock(rc=15)
+        self.client.publish.side_effect = None
+        self.client.publish.return_value = result
+
+        with self.assertRaisesRegex(ConnectionError, "rejected"):
+            self.bridge.publish_verification_failure(
+                "Backyard", "snapshot unavailable",
+                datetime(2026, 9, 11, tzinfo=timezone.utc),
+            )
+
+        result.wait_for_publish.assert_not_called()
 
     def test_local_alarm_state_is_published_as_authoritative_mirror(self):
         self.bridge.publish_alarm_state({
@@ -92,6 +153,24 @@ class HomeAssistantMQTTTests(unittest.TestCase):
         self.assertEqual(topic, "security_cam/alarm/state")
         self.assertEqual(json.loads(raw)["control"], "automatic")
         self.assertTrue(options["retain"])
+
+    def test_incident_event_preserves_local_policy_context(self):
+        self.bridge.publish_incident({
+            "id": "incident-1",
+            "camera": "garage",
+            "classification": "private",
+            "alarm_mode": "armed_away",
+            "alarm_control": "automatic",
+            "presence": "away",
+        }, "incident_notified")
+
+        topic, raw, options = self.published[-1]
+        self.assertEqual(topic, "security_cam/alarm/incident")
+        payload = json.loads(raw)
+        self.assertEqual(payload["event_type"], "incident_notified")
+        self.assertEqual(payload["alarm_mode"], "armed_away")
+        self.assertEqual(payload["presence"], "away")
+        self.assertFalse(options["retain"])
 
 
 class CameraHostTests(unittest.TestCase):

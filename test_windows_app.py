@@ -2,10 +2,10 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from windows_app import (
-    alarm_policy_controller, camera_endpoints, find_project_root,
+    SecurityCamApp, alarm_policy_controller, camera_endpoints, find_project_root,
     monitor_command, parse_dvrip_log,
 )
 
@@ -70,6 +70,41 @@ class WindowsAppTests(unittest.TestCase):
             second = alarm_policy_controller(root)
             self.assertEqual(second.snapshot()["mode"], "armed_away")
             self.assertEqual(second.state_file, root / "runtime-state.json")
+
+    def test_unexpected_monitor_exit_schedules_restart(self):
+        app = SecurityCamApp.__new__(SecurityCamApp)
+        app.process = MagicMock(returncode=9)
+        app.process.poll.return_value = 9
+        log_handle = MagicMock()
+        app.log_handle = log_handle
+        app.keep_monitor_running = True
+        app.restart_pending = False
+        app.root = MagicMock()
+        app.set_status = MagicMock()
+        app.refresh_log = MagicMock()
+
+        app.poll()
+
+        log_handle.close.assert_called_once_with()
+        app.set_status.assert_called_once_with(
+            "Monitor finalizó · código 9 · reinicio en 5 s"
+        )
+        self.assertTrue(app.restart_pending)
+        app.root.after.assert_any_call(5000, app._restart_monitor)
+        app.root.after.assert_any_call(1000, app.poll)
+
+    def test_requested_stop_disables_restart(self):
+        app = SecurityCamApp.__new__(SecurityCamApp)
+        app.keep_monitor_running = True
+        app.restart_pending = True
+        app.set_status = MagicMock()
+
+        with patch("windows_app.threading.Thread") as thread:
+            app.stop_monitor()
+
+        self.assertFalse(app.keep_monitor_running)
+        self.assertFalse(app.restart_pending)
+        thread.assert_called_once()
 
 
 if __name__ == "__main__":

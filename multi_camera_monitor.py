@@ -8,6 +8,8 @@ import signal
 import threading
 import time
 from argparse import ArgumentParser
+import atexit
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -19,6 +21,7 @@ from dvrip_events import DVRIPAlarmListener
 from onvif_snapshot import download_snapshot, xmeye_snapshot_uri
 from telegram_notify import CameraConnectivityAlerts, TelegramNotifier
 from timestamp_logging import install_timestamped_logging
+from single_instance import SingleInstanceLock
 from camera_config import camera_name, credentials, dvrip_endpoint, expand_host, required_env, rtsp_url
 
 if TYPE_CHECKING:
@@ -276,13 +279,19 @@ def technical_notifier(multi: dict, multi_path: Path) -> TelegramNotifier | None
 
 def main() -> None:
     install_timestamped_logging()
-    from dvrip_smart_telegram import SmartAlarm, load_windows_user_environment
 
     parser = ArgumentParser(description="Run smart DVRIP monitoring for multiple cameras.")
     parser.add_argument("--config", default="multi-camera.json")
     args = parser.parse_args()
-    load_windows_user_environment()
     multi_path = Path(args.config).resolve()
+    lock_digest = hashlib.sha256(str(multi_path).encode("utf-8")).hexdigest()[:16]
+    instance_lock = SingleInstanceLock(f"security-cam-monitor-{lock_digest}")
+    if not instance_lock.acquire():
+        raise SystemExit(f"Another monitor is already running for {multi_path}")
+    atexit.register(instance_lock.release)
+    from dvrip_smart_telegram import SmartAlarm, load_windows_user_environment
+
+    load_windows_user_environment()
     multi = load_config(multi_path)
     from alarm_policy import AlarmPolicyController
 
@@ -327,7 +336,11 @@ def main() -> None:
     if output_mode in {"mqtt", "both"}:
         try:
             from home_assistant_mqtt import HomeAssistantMQTT
-            home_assistant = HomeAssistantMQTT(multi.get("home_assistant", {}).get("mqtt", {})).start()
+            home_assistant = (
+                HomeAssistantMQTT(multi.get("home_assistant", {}).get("mqtt", {}))
+                .set_command_handler(policy.handle_command)
+                .start()
+            )
         except Exception as error:
             print(f"Home Assistant MQTT unavailable; local alarm remains active: {type(error).__name__}: {error}")
 
@@ -463,7 +476,12 @@ def main() -> None:
                     if channel.send_photo(image, caption):
                         policy.mark_notified(str(incident["camera"]))
                         if home_assistant:
-                            home_assistant.publish_incident(incident, "incident_notified")
+                            home_assistant.publish_incident({
+                                **incident,
+                                "alarm_mode": state["mode"],
+                                "alarm_control": state["control"],
+                                "presence": state["presence"],
+                            }, "incident_notified")
                 except Exception as error:
                     print(f"{incident.get('camera')}: incident notification failed: {type(error).__name__}: {error}")
     except KeyboardInterrupt:

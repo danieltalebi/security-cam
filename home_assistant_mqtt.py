@@ -8,6 +8,7 @@ import re
 import threading
 import uuid
 from datetime import datetime
+from typing import Callable
 
 import paho.mqtt.client as mqtt
 
@@ -49,6 +50,7 @@ class HomeAssistantMQTT:
         self._local_alarm_state: dict | None = None
         self._alarm_mode: str | None = None
         self._alarm_mode_lock = threading.Lock()
+        self._command_handler: Callable[[str], str | None] | None = None
 
         client_id = str(config.get("client_id") or f"security-cam-{uuid.uuid4().hex[:8]}")
         self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
@@ -88,6 +90,7 @@ class HomeAssistantMQTT:
             return
         self._connected.set()
         self.client.subscribe(self._topic("alarm", "mode"), qos=self.qos)
+        self.client.subscribe(self._topic("alarm", "command"), qos=self.qos)
         self.client.publish(self._topic("app", "status"), "online", qos=self.qos, retain=True)
         for name in list(self._registered.values()):
             self._publish_discovery(name)
@@ -107,18 +110,34 @@ class HomeAssistantMQTT:
         self._connected.clear()
 
     def _on_message(self, _client, _userdata, message) -> None:
-        if message.topic != self._topic("alarm", "mode"):
-            return
         try:
-            mode = message.payload.decode("utf-8").strip()
+            payload = message.payload.decode("utf-8").strip()
         except (AttributeError, UnicodeDecodeError):
             return
-        if mode not in ALARM_MODES:
-            print(f"Ignoring unsupported Home Assistant alarm mode: {mode!r}")
+        if message.topic == self._topic("alarm", "command"):
+            if not self._command_handler:
+                print("Ignoring Home Assistant alarm command: no local handler is registered")
+                return
+            result = self._command_handler(payload)
+            if result is None:
+                print(f"Ignoring unsupported Home Assistant alarm command: {payload!r}")
+            else:
+                print(f"Home Assistant alarm command applied locally: {result}")
             return
-        with self._alarm_mode_lock:
-            self._alarm_mode = mode
-        print(f"MQTT alarm mode mirror received: {mode}")
+        if message.topic == self._topic("alarm", "mode"):
+            if payload not in ALARM_MODES:
+                print(f"Ignoring unsupported Home Assistant alarm mode: {payload!r}")
+                return
+            with self._alarm_mode_lock:
+                self._alarm_mode = payload
+            print(f"MQTT alarm mode mirror received: {payload}")
+
+    def set_command_handler(
+        self, handler: Callable[[str], str | None],
+    ) -> "HomeAssistantMQTT":
+        """Route explicit HA operator commands into the local controller."""
+        self._command_handler = handler
+        return self
 
     @property
     def alarm_mode(self) -> str | None:
@@ -128,6 +147,28 @@ class HomeAssistantMQTT:
     def should_verify_camera_events(self) -> bool:
         """Compatibility shim: evidence capture is never gated by Home Assistant."""
         return True
+
+    def _publish_checked(
+        self, topic: str, payload, *, retain: bool = False, timeout: float = 5.0,
+    ) -> None:
+        """Publish a live event without filling Paho's offline queue."""
+        if not self._connected.is_set():
+            raise ConnectionError("MQTT is disconnected; live event was not queued.")
+        result = self.client.publish(
+            topic, payload, qos=self.qos, retain=retain,
+        )
+        if result.rc != mqtt.MQTT_ERR_SUCCESS:
+            raise ConnectionError(
+                f"MQTT rejected the live event: {mqtt.error_string(result.rc)}"
+            )
+        try:
+            result.wait_for_publish(timeout)
+        except ValueError as error:
+            raise ConnectionError("MQTT could not queue the live event.") from error
+        if result.rc != mqtt.MQTT_ERR_SUCCESS:
+            raise ConnectionError(
+                f"MQTT did not publish the live event: {mqtt.error_string(result.rc)}"
+            )
 
     def publish_alarm_state(self, state: dict) -> None:
         """Mirror the authoritative local alarm state into Home Assistant."""
@@ -207,6 +248,31 @@ class HomeAssistantMQTT:
             f"{self.discovery_prefix}/event/security_camera_local_alarm/incident/config",
             json.dumps(event), qos=self.qos, retain=True,
         )
+        command_topic = self._topic("alarm", "command")
+        buttons = {
+            "automatic": ("Automatic control", "automatic", "mdi:shield-sync", "/auto"),
+            "disarm": ("Disarm", "disarm", "mdi:shield-off-outline", "/disarm"),
+            "arm_home": ("Arm at home", "arm_at_home", "mdi:shield-home-outline", "/home"),
+            "arm_away": ("Arm away", "arm_away", "mdi:shield-lock-outline", "/away"),
+            "pause_1h": ("Pause alerts 1 hour", "pause_alerts_1_hour", "mdi:timer-pause", "1h"),
+            "resume": ("Resume alerts", "resume_alerts", "mdi:bell-ring-outline", "/resume"),
+            "acknowledge": ("Acknowledge incidents", "acknowledge_incidents", "mdi:check-decagram", "OK"),
+        }
+        for slug, (name, entity_slug, icon, payload_press) in buttons.items():
+            button = {
+                "name": name,
+                "unique_id": f"security_camera_local_alarm_{slug}",
+                "default_entity_id": f"button.security_camera_{entity_slug}",
+                "command_topic": command_topic,
+                "payload_press": payload_press,
+                "availability_topic": self._topic("app", "status"),
+                "icon": icon,
+                "device": device,
+            }
+            self.client.publish(
+                f"{self.discovery_prefix}/button/security_camera_local_alarm/{slug}/config",
+                json.dumps(button), qos=self.qos, retain=True,
+            )
 
     def register_camera(self, name: str) -> None:
         slug = mqtt_slug(name)
@@ -232,12 +298,7 @@ class HomeAssistantMQTT:
         if slug not in self._registered:
             self.register_camera(name)
         event_id = uuid.uuid4().hex
-        image_result = self.client.publish(
-            self._topic(slug, "snapshot"), image, qos=self.qos, retain=False,
-        )
-        image_result.wait_for_publish(5)
-        if image_result.rc != mqtt.MQTT_ERR_SUCCESS:
-            raise ConnectionError("MQTT did not accept the detection image.")
+        self._publish_checked(self._topic(slug, "snapshot"), image)
         payload = {
             "event_type": "person_detected",
             "event_id": event_id,
@@ -249,13 +310,10 @@ class HomeAssistantMQTT:
             "source": source,
             "occurred_at": occurred_at.isoformat(),
         }
-        event_result = self.client.publish(
-            self._topic(slug, "event"), json.dumps(payload, separators=(",", ":")),
-            qos=self.qos, retain=False,
+        self._publish_checked(
+            self._topic(slug, "event"),
+            json.dumps(payload, separators=(",", ":")),
         )
-        event_result.wait_for_publish(5)
-        if event_result.rc != mqtt.MQTT_ERR_SUCCESS:
-            raise ConnectionError("MQTT did not accept the camera event.")
         return event_id
 
     def publish_verification_failure(
@@ -274,13 +332,10 @@ class HomeAssistantMQTT:
             "reason": reason,
             "occurred_at": occurred_at.isoformat(),
         }
-        result = self.client.publish(
-            self._topic(slug, "event"), json.dumps(payload, separators=(",", ":")),
-            qos=self.qos, retain=False,
+        self._publish_checked(
+            self._topic(slug, "event"),
+            json.dumps(payload, separators=(",", ":")),
         )
-        result.wait_for_publish(5)
-        if result.rc != mqtt.MQTT_ERR_SUCCESS:
-            raise ConnectionError("MQTT did not accept the verification failure event.")
         return event_id
 
     def publish_presence(self, state: str, attributes: dict) -> None:

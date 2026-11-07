@@ -19,6 +19,8 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from single_instance import SingleInstanceLock
+
 
 APP_TITLE = "Security Cam"
 MONITOR_SCRIPT = "multi_camera_monitor.py"
@@ -218,6 +220,8 @@ class SecurityCamApp:
         self.log_path = self.log_dir / "security-cam-windows.log"
         self.process: subprocess.Popen | None = None
         self.log_handle = None
+        self.keep_monitor_running = False
+        self.restart_pending = False
         self.status = tk.StringVar(value="Monitor detenido")
         self.health_check_running = False
         self.health_cards: dict[str, dict[str, object]] = {}
@@ -368,6 +372,8 @@ class SecurityCamApp:
             else:
                 options["start_new_session"] = True
             self.process = subprocess.Popen(command, **options)
+            self.keep_monitor_running = True
+            self.restart_pending = False
             self.set_status(f"Monitor activo · PID {self.process.pid}")
         except Exception as error:
             if self.log_handle:
@@ -397,6 +403,8 @@ class SecurityCamApp:
             self.root.after(0, lambda: self.set_status("Monitor detenido"))
 
     def stop_monitor(self) -> None:
+        self.keep_monitor_running = False
+        self.restart_pending = False
         self.set_status("Deteniendo monitor…")
         threading.Thread(target=self._stop_worker, daemon=True).start()
 
@@ -587,13 +595,28 @@ class SecurityCamApp:
                 self.log_handle.close()
                 self.log_handle = None
             self.process = None
-            self.set_status(f"Monitor detenido · código {code}")
+            if self.keep_monitor_running:
+                self.set_status(f"Monitor finalizó · código {code} · reinicio en 5 s")
+                if not self.restart_pending:
+                    self.restart_pending = True
+                    self.root.after(5000, self._restart_monitor)
+            else:
+                self.set_status(f"Monitor detenido · código {code}")
         self.refresh_log()
         self.root.after(1000, self.poll)
+
+    def _restart_monitor(self) -> None:
+        self.restart_pending = False
+        if self.keep_monitor_running and not (
+            self.process and self.process.poll() is None
+        ):
+            self.start_monitor()
 
     def close(self) -> None:
         from tkinter import messagebox
 
+        self.keep_monitor_running = False
+        self.restart_pending = False
         if self.process and self.process.poll() is None:
             if not messagebox.askyesno(APP_TITLE, "El monitor está activo. ¿Detenerlo y salir?"):
                 return
@@ -607,6 +630,9 @@ def main() -> int:
     import tkinter as tk
     from tkinter import messagebox
 
+    instance_lock = SingleInstanceLock("security-cam-windows-app")
+    if not instance_lock.acquire():
+        return 0
     root = tk.Tk()
     try:
         app = SecurityCamApp(root)
@@ -616,8 +642,11 @@ def main() -> int:
         root.withdraw()
         messagebox.showerror(APP_TITLE, str(error))
         return 1
-    root.mainloop()
-    return 0
+    try:
+        root.mainloop()
+        return 0
+    finally:
+        instance_lock.release()
 
 
 if __name__ == "__main__":
