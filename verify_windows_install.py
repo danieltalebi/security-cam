@@ -24,6 +24,7 @@ DEPENDENCIES = (
     "dvrip",
     "paho.mqtt.client",
     "tzdata",
+    "cryptography",
 )
 APPLICATION_MODULES = (
     "camera_config",

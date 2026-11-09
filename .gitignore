@@ -20,5 +20,7 @@ snapshot-*.jpg
 .telegram-mute.json
 .connectivity-history.json
 .security-cam-state.json
+backups/
+*.scbackup
 yolov8n.pt
 [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/

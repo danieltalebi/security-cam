@@ -8,3 +8,4 @@ onvif-zeep>=0.2.12
 dvrip>=0.0.3
 paho-mqtt>=2.0.0,<3
 tzdata>=2025.2
+cryptography>=46.0.0,<47

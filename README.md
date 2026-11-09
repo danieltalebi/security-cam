@@ -117,6 +117,28 @@ evidence continue while alerts are paused or disarmed, and all operator state is
 stored atomically in the ignored `.security-cam-state.json` file. Credentials
 remain in environment variables or the platform credential store.
 
+#### Moving the Windows installation to another computer
+
+Double-click `backup_config_windows.bat` to create an encrypted `.scbackup`
+file under the ignored `backups` directory. The backup contains the local
+camera and multi-camera JSON files, Home Assistant YAML from this repository,
+alarm/mute/connectivity state, and the Windows user environment values used by
+cameras, Telegram, MQTT, and router presence. It is encrypted with AES-256-GCM;
+the password is never stored. Copy the backup to a private location and keep
+its password separately.
+
+On the new computer, clone the repository, run `setup_windows.bat`, copy the
+`.scbackup` file locally, and either drag it onto `restore_config_windows.bat`
+or pass its path as the first argument. The restore refuses to overwrite
+different files or Windows variables unless `--force` is explicitly used.
+Restart Security Cam after restoration so the new process inherits the restored
+environment.
+
+This portable backup covers the client in this repository. Home Assistant's
+own device registry, integrations, users, add-ons, and dashboards stored in its
+internal database must also be protected with Home Assistant's built-in backup
+and restored on the Home Assistant host.
+
 Camera connectivity is monitored through the DVRIP event connection, including
 a watchdog that reconnects when keepalive responses stop. The multi-camera
 defaults send the first Telegram alert after 5 minutes and repeat it every 6
