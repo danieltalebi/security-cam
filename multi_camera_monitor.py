@@ -342,6 +342,7 @@ def main() -> None:
     home_assistant = None
     presence_monitor = None
     internet_monitor = None
+    connectivity_history = None
     system_notifier = technical_notifier(multi, multi_path)
     if system_notifier:
         system_notifier = system_notifier.start_command_listener().set_command_handler(policy.handle_command)
@@ -358,6 +359,31 @@ def main() -> None:
         raise RuntimeError("health.camera_offline_alert_seconds must contain positive seconds.")
     if camera_repeat_seconds is not None and camera_repeat_seconds <= 0:
         raise RuntimeError("health.camera_offline_repeat_seconds must be positive or null.")
+    if system_notifier:
+        from connectivity_history import ConnectivityHistory
+
+        connectivity_state = Path(
+            health_config.get("connectivity_state_file", ".connectivity-history.json")
+        )
+        if not connectivity_state.is_absolute():
+            connectivity_state = multi_path.parent / connectivity_state
+        router_names = [
+            str(source.get("name") or source.get("type") or "router")
+            for source in multi.get("presence", {}).get("sources", [])
+        ]
+        connectivity_history = ConnectivityHistory(
+            connectivity_state,
+            system_notifier.send_message,
+            router_names,
+            internet_threshold_seconds=float(
+                health_config.get("internet_outage_alert_seconds", 600)
+            ),
+            router_alert_seconds=float(
+                health_config.get("router_offline_alert_seconds", 3600)
+            ),
+            summary_time=str(health_config.get("daily_summary_time", "19:00")),
+            timezone=health_config.get("timezone"),
+        ).start()
     if system_notifier and health_config.get("internet_enabled", True):
         from internet_connectivity import InternetConnectivityMonitor
 
@@ -366,6 +392,7 @@ def main() -> None:
             interval_seconds=float(health_config.get("internet_poll_seconds", 30)),
             timeout_seconds=float(health_config.get("internet_timeout_seconds", 5)),
             failure_threshold=int(health_config.get("internet_failure_threshold", 2)),
+            history=connectivity_history,
         ).start()
     if output_mode in {"mqtt", "both"}:
         try:
@@ -400,9 +427,11 @@ def main() -> None:
         presence_monitor = RouterPresenceMonitor(
             presence_config, publish_presence,
             notify=system_notifier.send_message if system_notifier else None,
+            history=connectivity_history,
         ).start()
 
     notification_channels: dict[str, TelegramNotifier] = {}
+    media_sources = []
     for entry in multi.get("cameras", []):
         name = entry.get("name")
         mode = entry["mode"]
@@ -442,6 +471,30 @@ def main() -> None:
             handler = alarm.handle_event
         else:
             raise RuntimeError(f"{name}: unsupported mode {mode!r}.")
+        from camera_media import CameraMediaSource
+
+        snapshot = config["snapshot"]
+        lens = None
+        layout_size = None
+        if config.get("layout"):
+            media_region = str(config.get("telegram_media", {}).get("lens", "ptz"))
+            if media_region not in config["layout"]:
+                raise RuntimeError(f"{name}: telegram_media.lens {media_region!r} is not in layout.")
+            lens = tuple(map(int, config["layout"][media_region]))
+            layout_size = (
+                max(int(bounds[2]) for bounds in config["layout"].values()),
+                max(int(bounds[3]) for bounds in config["layout"].values()),
+            )
+        media_sources.append(CameraMediaSource(
+            name=name,
+            snapshot_url=expand_host(snapshot["url"], config, name),
+            username=user,
+            password=password,
+            query_auth=bool(snapshot.get("xmeye_query_auth", False)),
+            stream=stream,
+            lens=lens,
+            layout_size=layout_size,
+        ))
         connectivity = CameraConnectivityAlerts(
             name, system_notifier, thresholds=camera_thresholds,
             repeat_seconds=camera_repeat_seconds, bypass_mute=True,
@@ -466,6 +519,15 @@ def main() -> None:
 
     if not listeners:
         raise RuntimeError("No cameras were configured.")
+    if system_notifier and media_sources:
+        from camera_media import CameraMediaCommands, chain_command_handlers
+
+        media_commands = CameraMediaCommands(media_sources, system_notifier)
+        shared_handler = chain_command_handlers(media_commands, policy.handle_command)
+        controllers = {id(system_notifier): system_notifier}
+        controllers.update({id(channel): channel for channel in notification_channels.values()})
+        for controller in controllers.values():
+            controller.set_command_handler(shared_handler)
     stop_event = threading.Event()
 
     def request_stop(_signum: int, _frame) -> None:
@@ -525,6 +587,8 @@ def main() -> None:
             presence_monitor.stop()
         if internet_monitor:
             internet_monitor.stop()
+        if connectivity_history:
+            connectivity_history.stop()
         if home_assistant:
             home_assistant.stop()
         signal.signal(signal.SIGTERM, previous_sigterm)

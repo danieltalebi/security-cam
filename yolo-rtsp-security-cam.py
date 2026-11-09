@@ -17,7 +17,20 @@ from datetime import datetime
 from ffmpeg import FFmpeg
 from skimage.metrics import mean_squared_error as ssim
 from argparse import ArgumentParser, ArgumentDefaultsHelpFormatter, BooleanOptionalAction
-from sshkeyboard import listen_keyboard, stop_listening
+if os.name == "nt":
+    import msvcrt
+
+    def listen_keyboard(on_press):
+        """Minimal Windows console keyboard listener compatible with sshkeyboard's API."""
+        while loop:
+            if msvcrt.kbhit():
+                on_press(msvcrt.getwch().lower())
+            time.sleep(0.05)
+
+    def stop_listening():
+        pass
+else:
+    from sshkeyboard import listen_keyboard, stop_listening
 from camera_config import credentials, dvrip_endpoint, expand_host, rtsp_url
 
 # Parse command line arguments

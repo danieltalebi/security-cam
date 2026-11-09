@@ -55,25 +55,41 @@ def main() -> None:
     name = prompt("Camera name (for example garage or back patio)")
     key = slug(name)
     filename = f"{name.strip().lower().replace(' ', '-')}-monitor.json"
-    mode = prompt("Mode: property (private/public classifier) or presence (any person alerts)", "presence").lower()
+    target = ROOT / filename
+    multi_path = ROOT / "multi-camera.json"
+    multi = load_json(multi_path, {"cameras": []})
+    existing_entry = next(
+        (item for item in multi.get("cameras", []) if item.get("name", "").lower() == name.lower()),
+        {},
+    )
+    mode = prompt(
+        "Mode: property (private/public classifier) or presence (any person alerts)",
+        existing_entry.get("mode", "presence"),
+    ).lower()
     if mode not in {"property", "presence"}:
         raise RuntimeError("Mode must be property or presence.")
-    host = prompt("Camera hostname or reserved IP address")
+    template_name = "smart-monitor.example.json" if mode == "property" else "backyard-monitor.example.json"
+    config = load_json(target, load_json(ROOT / template_name, {}))
+    configured_host = config.get("camera", {}).get("host") or config.get("dvrip", {}).get("host")
+    host = prompt(
+        "Camera hostname or reserved IP address",
+        configured_host if configured_host != "{host}" else None,
+    )
     username = prompt("Camera username")
     password = prompt("Camera password", secret=True)
-    rtsp = prompt(
-        "Complete RTSP URL (recommended as verification fallback)",
-        required=mode == "property",
+    rtsp = prompt("RTSP URL (credentials may be omitted)", required=mode == "property")
+    snapshot = prompt(
+        "JPEG snapshot URL",
+        config.get("snapshot", {}).get(
+            "url", f"http://{host}:8899/webcapture.jpg?command=snap&channel=0",
+        ),
     )
-    snapshot = prompt("JPEG snapshot URL", f"http://{host}/webcapture.jpg?command=snap&channel=0")
     bot_token = ""
     chat_id = ""
     if output_mode in {"telegram", "both"}:
         bot_token = prompt("Telegram bot token (leave blank to keep existing)", secret=True, required=False)
         chat_id = prompt("Telegram chat ID (leave blank to keep existing)", required=False)
 
-    template_name = "smart-monitor.example.json" if mode == "property" else "backyard-monitor.example.json"
-    config = load_json(ROOT / template_name, {})
     prefix = f"CAMERA_{key}"
     config["camera"] = {"name": name, "credential_prefix": prefix, "host": host}
     if rtsp:
@@ -82,7 +98,6 @@ def main() -> None:
     config["dvrip"]["host"] = "{host}"
     config["snapshot"]["url"] = snapshot.replace(host, "{host}", 1)
     config["snapshot"]["review_dir"] = f"events/review/{name.strip().lower().replace(' ', '-') }"
-    target = ROOT / filename
     target.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
 
     entry = {"name": name, "mode": mode, "config": filename}

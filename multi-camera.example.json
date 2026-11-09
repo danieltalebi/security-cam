@@ -20,7 +20,12 @@
     "internet_enabled": true,
     "internet_poll_seconds": 30,
     "internet_timeout_seconds": 5,
-    "internet_failure_threshold": 2
+    "internet_failure_threshold": 2,
+    "internet_outage_alert_seconds": 600,
+    "router_offline_alert_seconds": 3600,
+    "daily_summary_time": "19:00",
+    "timezone": "Australia/Sydney",
+    "connectivity_state_file": ".connectivity-history.json"
   },
   "alarm_policy": {
     "state_file": ".security-cam-state.json",

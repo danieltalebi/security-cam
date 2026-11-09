@@ -119,6 +119,34 @@ class TelegramNotifier:
             raise RuntimeError("Telegram did not accept the photo.")
         return True
 
+    def send_video(
+        self, video: bytes, caption: str, filename: str = "camera.mp4",
+    ) -> bool:
+        """Upload an MP4 as a native Telegram video with streaming enabled."""
+        boundary = "----securitycam" + uuid.uuid4().hex
+        safe_filename = re.sub(r"[^a-zA-Z0-9_.-]", "_", filename)
+        parts = [
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"chat_id\"\r\n\r\n{self.chat_id}\r\n".encode(),
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"caption\"\r\n\r\n{caption}\r\n".encode(),
+            f"--{boundary}\r\nContent-Disposition: form-data; name=\"supports_streaming\"\r\n\r\ntrue\r\n".encode(),
+            (
+                f"--{boundary}\r\nContent-Disposition: form-data; name=\"video\"; "
+                f"filename=\"{safe_filename}\"\r\nContent-Type: video/mp4\r\n\r\n"
+            ).encode(),
+            video,
+            f"\r\n--{boundary}--\r\n".encode(),
+        ]
+        request = Request(
+            f"https://api.telegram.org/bot{self.token}/sendVideo",
+            data=b"".join(parts), method="POST",
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+        with urlopen(request, timeout=45) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        if not result.get("ok"):
+            raise RuntimeError("Telegram did not accept the video.")
+        return True
+
     def send_message(self, text: str) -> None:
         payload = json.dumps({"chat_id": self.chat_id, "text": text}).encode("utf-8")
         request = Request(

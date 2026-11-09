@@ -180,6 +180,8 @@ class AlarmPolicyTests(unittest.TestCase):
         clock = Clock(self.local_epoch(12))
         policy = self.controller(clock)
         self.assertIn("/manual", policy.handle_command("/help"))
+        self.assertIn("/photo", policy.handle_command("/help"))
+        self.assertIn("/video", policy.handle_command("/help"))
         self.assertIn("armed_away", policy.handle_command("/away"))
         self.assertEqual(policy.snapshot()["control"], "manual")
         self.assertIn("armed_home", policy.handle_command("/home"))

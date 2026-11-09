@@ -39,11 +39,13 @@ class InternetConnectivityMonitor:
         timeout_seconds: float = 5,
         failure_threshold: int = 2,
         probe: Callable[[], bool] | None = None,
+        history=None,
     ):
         self.notify = notify
         self.interval = max(5.0, float(interval_seconds))
         self.failure_threshold = max(1, int(failure_threshold))
         self.probe = probe or (lambda: internet_reachable(float(timeout_seconds)))
+        self.history = history
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         self.online: bool | None = None
@@ -67,16 +69,19 @@ class InternetConnectivityMonitor:
             self.consecutive_failures = 0
             if self.online is False and self.first_failure_at is not None:
                 duration = now - self.first_failure_at
-                message = f"✅ Internet connection restored after {format_duration(duration)} offline."
-                print(message)
-                try:
-                    self.notify(message)
-                except Exception as error:
-                    print(f"Telegram Internet recovery alert failed: {type(error).__name__}: {error}")
+                if self.history is None:
+                    message = f"✅ Internet connection restored after {format_duration(duration)} offline."
+                    print(message)
+                    try:
+                        self.notify(message)
+                    except Exception as error:
+                        print(f"Telegram Internet recovery alert failed: {type(error).__name__}: {error}")
             elif self.online is None:
                 print("Internet connectivity initialized: online")
             self.online = True
             self.first_failure_at = None
+            if self.history is not None:
+                self.history.set_internet(True, now)
             return True
 
         if self.first_failure_at is None:
@@ -85,6 +90,10 @@ class InternetConnectivityMonitor:
         if self.consecutive_failures >= self.failure_threshold and self.online is not False:
             self.online = False
             print("Internet connection is offline; recovery duration tracking started")
+            if self.history is not None:
+                # Keep the first failed probe as the incident start, including
+                # the confirmation interval before the threshold was reached.
+                self.history.set_internet(False, self.first_failure_at)
         return False
 
     def _run(self) -> None:

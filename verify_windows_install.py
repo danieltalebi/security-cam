@@ -23,6 +23,7 @@ DEPENDENCIES = (
     "onvif",
     "dvrip",
     "paho.mqtt.client",
+    "tzdata",
 )
 APPLICATION_MODULES = (
     "camera_config",

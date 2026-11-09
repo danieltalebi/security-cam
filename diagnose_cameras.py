@@ -32,7 +32,7 @@ def check_camera(name: str, config: dict, send_telegram: bool) -> bool:
             connection.close()
         print(f"{name}: DVRIP OK")
     except Exception as error:
-        print(f"{name}: DVRIP FAIL ({type(error).__name__})")
+        print(f"{name}: DVRIP FAIL ({type(error).__name__}: {error})")
         ok = False
 
     try:
@@ -44,7 +44,7 @@ def check_camera(name: str, config: dict, send_telegram: bool) -> bool:
         image = download_snapshot(uri, user, password, 8)
         print(f"{name}: snapshot OK ({len(image):,} bytes)")
     except Exception as error:
-        print(f"{name}: snapshot FAIL ({type(error).__name__})")
+        print(f"{name}: snapshot FAIL ({type(error).__name__}: {error})")
         ok = False
 
     if send_telegram:
@@ -54,7 +54,7 @@ def check_camera(name: str, config: dict, send_telegram: bool) -> bool:
             notifier.send_message(f"Security camera diagnostic: {name} Telegram OK")
             print(f"{name}: Telegram OK")
         except Exception as error:
-            print(f"{name}: Telegram FAIL ({type(error).__name__})")
+            print(f"{name}: Telegram FAIL ({type(error).__name__}: {error})")
             ok = False
     return ok
 

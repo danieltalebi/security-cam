@@ -17,7 +17,7 @@ import os
 import re
 import subprocess
 import sys
-from urllib.parse import urlparse, urlsplit, urlunsplit
+from urllib.parse import quote, urlparse, urlsplit, urlunsplit
 
 
 def slug(value: str) -> str:
@@ -130,7 +130,29 @@ def rtsp_url(config: dict, fallback: str = "camera") -> str | None:
     else:
         value = configured_value(camera.get("rtsp_env") or f"{credential_prefix(config, fallback)}_RTSP_URL")
     value = value or camera.get("rtsp_url")
-    return expand_host(value, config, fallback) if value else None
+    if not value:
+        return None
+    value = expand_host(value, config, fallback)
+
+    # Keep passwords out of the saved RTSP variable. Camera credentials are
+    # inserted only in memory, URL-encoded for ffmpeg, when the supplied URL
+    # does not already contain complete authentication.
+    parsed = urlsplit(value)
+    if parsed.scheme.lower() != "rtsp" or (parsed.username is not None and parsed.password is not None):
+        return value
+    try:
+        user, password = credentials(config, fallback)
+    except RuntimeError:
+        # Some callers only need the canonical host-expanded URI. Authentication
+        # is mandatory later when a camera connection is actually opened.
+        return value
+    hostname = parsed.hostname or ""
+    if ":" in hostname:
+        hostname = f"[{hostname}]"
+    netloc = f"{quote(user, safe='')}:{quote(password, safe='')}@{hostname}"
+    if parsed.port is not None:
+        netloc += f":{parsed.port}"
+    return urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
 
 
 def dvrip_endpoint(config: dict, fallback: str = "camera") -> tuple[str, int]:

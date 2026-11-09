@@ -211,9 +211,10 @@ class RouterPresenceTests(unittest.TestCase):
         self.assertTrue(any("Daniel iPhone disconnected" in line for line in lines))
         self.assertTrue(any("All configured iPhones are offline" in line for line in lines))
 
-    def test_router_outage_and_recovery_send_telegram_transitions(self):
+    def test_router_outage_and_recovery_are_forwarded_to_persistent_history(self):
         monitor = object.__new__(RouterPresenceMonitor)
         monitor.notify = MagicMock()
+        monitor.history = MagicMock()
         monitor.devices = {}
         monitor._last_sources = {"asus": True, "huawei": True}
         monitor._source_offline_since = {}
@@ -231,9 +232,14 @@ class RouterPresenceTests(unittest.TestCase):
             1090,
         )
 
-        messages = [call.args[0] for call in monitor.notify.call_args_list]
-        self.assertTrue(any("cannot be contacted" in item for item in messages))
-        self.assertTrue(any("1m 30s" in item for item in messages))
+        self.assertEqual(
+            [call.args for call in monitor.history.set_router.call_args_list],
+            [
+                ("asus", False, 1000), ("huawei", True, 1000),
+                ("asus", True, 1090), ("huawei", True, 1090),
+            ],
+        )
+        monitor.notify.assert_not_called()
 
     def test_phone_is_not_marked_disconnected_while_one_router_is_unavailable(self):
         monitor = object.__new__(RouterPresenceMonitor)

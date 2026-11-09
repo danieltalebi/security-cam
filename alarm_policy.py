@@ -394,7 +394,8 @@ class AlarmPolicyController:
         if normalized in {"help", "ayuda", "commands", "comandos"}:
             return (
                 "Controles: /auto, /manual, /away, /home, /disarm, /status, "
-                "/resume, /until8; pausas: 10m, 1h, 1h30m o /pause 2h; "
+                "/resume, /until8; cámaras: /photo y /video; "
+                "pausas: 10m, 1h, 1h30m o /pause 2h; "
                 "responda OK para reconocer el incidente activo."
             )
         if normalized in {"auto", "automatico", "automático"}:

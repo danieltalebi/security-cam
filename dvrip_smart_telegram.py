@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
+import hashlib
 import threading
 import time
 from argparse import ArgumentParser
 from datetime import datetime
 from typing import TYPE_CHECKING
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import cv2
 import numpy as np
@@ -17,7 +18,7 @@ from ultralytics import YOLO
 
 from dvrip_events import DVRIPAlarmListener
 from onvif_snapshot import download_snapshot, xmeye_snapshot_uri
-from public_area import PublicAreaClassifier
+from snapshot_loitering import PersonObservation, SnapshotDwellTracker
 from telegram_notify import CameraConnectivityAlerts, TelegramNotifier
 from timestamp_logging import install_timestamped_logging
 from camera_config import credentials, dvrip_endpoint, required_env, rtsp_url
@@ -83,51 +84,57 @@ class SmartAlarm:
         self.role = role
         self.snapshot_url = expand_host(config["snapshot"]["url"], config, self.name)
         self.snapshot_query_auth = bool(config["snapshot"].get("xmeye_query_auth", False))
-        policy = config["public_area_classifier"]
-        self.public_threshold = float(policy["public_threshold"])
-        self.private_threshold = float(policy["private_threshold"])
-        self.classifier = PublicAreaClassifier(
-            policy["model_path"], tuple(self.layout["ptz"]), policy.get("device", "auto"),
-        )
         self.model = YOLO("yolov8n.pt")
-        self.video_seconds = float(config["snapshot"].get("video_fallback_seconds", 8))
-        self.interval = float(config["snapshot"].get("video_sample_seconds", 0.8))
+        self.loitering = config.get("snapshot_loitering", {})
+        self.loitering_enabled = bool(self.loitering.get("enabled", True))
+        self.interval = float(self.loitering.get("snapshot_interval_seconds", 0.75))
+        self.observation_seconds = float(self.loitering.get("observation_seconds", 12))
+        self.max_missing_snapshots = int(self.loitering.get("max_missing_snapshots", 3))
         self.review_dir = config["snapshot"].get("review_dir", "events/review")
         self.notification_cooldown = float(config.get("dvrip", {}).get("notification_cooldown_seconds", 40))
         self.last_private_notification_at = float("-inf")
         self.notification_lock = threading.Lock()
         self.event_debounce = float(config.get("dvrip", {}).get("event_debounce_seconds", 3))
         self.last_accepted_event_at = float("-inf")
+        self.last_confirmed_event_at = float("-inf")
         self.event_lock = threading.Lock()
+        self.session_lock = threading.Lock()
 
-    def analyze(self, frame: np.ndarray) -> tuple[str, np.ndarray, int]:
+    def detect_people(
+        self, frame: np.ndarray,
+    ) -> tuple[np.ndarray, list[PersonObservation], list[PersonObservation]]:
         result = self.model.predict(frame, classes=[0], conf=0.5, verbose=False)[0]
-        probability = self.classifier.predict(frame)
         fixed, ptz = tuple(self.layout["fixed"]), tuple(self.layout["ptz"])
-        decisions = []
+        fixed_people: list[PersonObservation] = []
+        ptz_people: list[PersonObservation] = []
         for x1, y1, x2, y2, confidence, _class_id in result.boxes.data.tolist():
             box = tuple(map(int, (x1, y1, x2, y2)))
             foot = ((box[0] + box[2]) / 2, box[3])
+            observation = PersonObservation(
+                box, foot, max(1, box[3] - box[1]), float(confidence),
+            )
             if fixed[0] <= foot[0] <= fixed[2] and fixed[1] <= foot[1] <= fixed[3]:
-                decision, color = "private", (0, 0, 255)
+                fixed_people.append(observation)
+                label, color = "fixed immediate", (0, 0, 255)
             elif ptz[0] <= foot[0] <= ptz[2] and ptz[1] <= foot[1] <= ptz[3]:
-                value = self.classifier.probability_at(foot)
-                if value is not None and value >= self.public_threshold:
-                    decision, color = "public", (0, 165, 255)
-                elif value is not None and value <= self.private_threshold:
-                    decision, color = "private", (0, 0, 255)
-                else:
-                    decision, color = "uncertain", (0, 255, 255)
+                local_box = (
+                    box[0] - ptz[0], box[1] - ptz[1],
+                    box[2] - ptz[0], box[3] - ptz[1],
+                )
+                local_foot = (foot[0] - ptz[0], foot[1] - ptz[1])
+                ptz_people.append(PersonObservation(
+                    local_box, local_foot, observation.height, observation.confidence,
+                ))
+                label, color = "ptz tracking", (0, 255, 255)
             else:
-                decision, color = "uncertain", (0, 255, 255)
-            decisions.append(decision)
+                label, color = "outside layout", (128, 128, 128)
             cv2.rectangle(frame, box[:2], box[2:], color, 3)
-            cv2.putText(frame, f"person {decision} {confidence:.2f}", (box[0], max(25, box[1] - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-        if "private" in decisions:
-            return "private", frame, len(decisions)
-        if decisions and all(item == "public" for item in decisions):
-            return "public", frame, len(decisions)
-        return "uncertain", frame, len(decisions)
+            cv2.putText(
+                frame, f"person {label} {confidence:.2f}",
+                (box[0], max(25, box[1] - 8)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2,
+            )
+        return frame, fixed_people, ptz_people
 
     @staticmethod
     def jpeg(frame: np.ndarray) -> bytes:
@@ -147,18 +154,21 @@ class SmartAlarm:
             raise RuntimeError("Could not save review JPEG.")
         return path
 
-    def notify_private(self, frame: np.ndarray, source: str, count: int) -> None:
-        """Notify only confirmed property detections, while still saving every event."""
+    def notify_alert(self, frame: np.ndarray, source: str, decision: str, count: int) -> None:
+        """Send a confirmed tracking alert when no local policy owns delivery."""
         if self.telegram is None:
             return
         with self.notification_lock:
             now = time.monotonic()
             remaining = self.notification_cooldown - (now - self.last_private_notification_at)
             if remaining > 0:
-                print(f"Telegram private notification suppressed ({remaining:.1f}s cooldown remaining)")
+                print(f"Telegram Garage notification suppressed ({remaining:.1f}s cooldown remaining)")
                 return
             self.last_private_notification_at = now
-        self.telegram.send_photo(self.jpeg(frame), f"{self.name} camera · {source} · private · persons={count}")
+        self.telegram.send_photo(
+            self.jpeg(frame),
+            f"{self.name} camera · {source} · {decision} · persons={count}",
+        )
 
     def publish_detection(
         self, frame: np.ndarray, source: str, decision: str, count: int,
@@ -184,6 +194,14 @@ class SmartAlarm:
 
     def fetch_snapshot(self) -> np.ndarray:
         uri = xmeye_snapshot_uri(self.snapshot_url, self.username, self.password) if self.snapshot_query_auth else self.snapshot_url
+        if self.loitering.get("cache_bust_query", True):
+            parsed = urlsplit(uri)
+            query = parse_qsl(parsed.query, keep_blank_values=True)
+            query.append(("security_cam_fresh", str(time.time_ns())))
+            uri = urlunsplit((
+                parsed.scheme, parsed.netloc, parsed.path,
+                urlencode(query), parsed.fragment,
+            ))
         data = download_snapshot(uri, self.username, self.password, 6)
         frame = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
         if frame is None:
@@ -192,49 +210,20 @@ class SmartAlarm:
             frame = cv2.resize(frame, (self.width, self.height), interpolation=cv2.INTER_AREA)
         return frame
 
-    def _video_frames(self):
-        command = [
-            "ffmpeg", "-loglevel", "error", "-rtsp_transport", "tcp", "-i", self.stream,
-            "-an", "-sn", "-dn", "-f", "rawvideo", "-pix_fmt", "bgr24", "pipe:1",
-        ]
-        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        size = self.width * self.height * 3
-        deadline = time.monotonic() + self.video_seconds
-        try:
-            while time.monotonic() < deadline:
-                raw = process.stdout.read(size)
-                if len(raw) != size:
-                    break
-                yield np.frombuffer(raw, np.uint8).reshape((self.height, self.width, 3)).copy()
-        finally:
-            if process.poll() is None:
-                process.kill()
+    def _crop(self, frame: np.ndarray, region: str) -> np.ndarray:
+        x1, y1, x2, y2 = map(int, self.layout[region])
+        crop = frame[y1:y2, x1:x2]
+        if crop.size == 0:
+            raise RuntimeError(f"Configured {region} lens crop is empty.")
+        return np.ascontiguousarray(crop)
 
-    def fallback(self, occurred_at: datetime) -> bool:
-        last = None
-        last_count = 0
-        next_sample = 0.0
-        for frame in self._video_frames():
-            if time.monotonic() < next_sample:
-                continue
-            next_sample = time.monotonic() + self.interval
-            decision, annotated, count = self.analyze(frame)
-            last, last_count = annotated, count
-            if decision != "uncertain":
-                evidence_path = self.save_result(annotated, "video", decision, count, occurred_at)
-                self.publish_detection(annotated, "video", decision, count, occurred_at)
-                self.register_local_detection(decision, evidence_path, occurred_at)
-                if decision == "private" and getattr(self, "policy", None) is None:
-                    self.notify_private(annotated, "video fallback", count)
-                print(f"DVRIP video decision: {decision} ({count} persons)")
-                return True
-        if last is not None:
-            evidence_path = self.save_result(last, "video", "uncertain", last_count, occurred_at)
-            self.publish_detection(last, "video", "uncertain", last_count, occurred_at)
-            self.register_local_detection("uncertain", evidence_path, occurred_at)
-            print(f"DVRIP video decision: uncertain ({last_count} persons)")
-            return True
-        return False
+    def _ptz_crop(self, frame: np.ndarray) -> np.ndarray:
+        return self._crop(frame, "ptz")
+
+    @staticmethod
+    def _snapshot_signature(frame: np.ndarray) -> bytes:
+        small = cv2.resize(frame, (160, 90), interpolation=cv2.INTER_AREA)
+        return hashlib.blake2b(small.tobytes(), digest_size=12).digest()
 
     def handle_event(self, event: dict) -> None:
         if event.get("type") != "person" or event.get("status") != "Start":
@@ -244,34 +233,153 @@ class SmartAlarm:
         # YOLO work; Home Assistant performs the longer incident correlation.
         with self.event_lock:
             now = time.monotonic()
+            if now - self.last_confirmed_event_at < self.notification_cooldown:
+                print("DVRIP person event suppressed: Garage event already confirmed")
+                return
             if now - self.last_accepted_event_at < self.event_debounce:
                 return
             self.last_accepted_event_at = now
+        if self.session_lock.locked():
+            print("DVRIP person event merged into the active snapshot tracking session")
+            return
         threading.Thread(target=self._handle_event, args=(datetime.now().astimezone(),), daemon=True).start()
 
     def _handle_event(self, occurred_at: datetime) -> None:
+        if not self.session_lock.acquire(blocking=False):
+            return
         try:
-            frame = self.fetch_snapshot()
-            decision, annotated, count = self.analyze(frame)
-            evidence_path = self.save_result(annotated, "image", decision, count, occurred_at)
-            print(f"DVRIP image decision: {decision} ({count} persons)")
-            if decision == "uncertain":
-                if self.fallback(occurred_at) is False:
-                    # The snapshot is still valid uncertain evidence when RTSP
-                    # cannot refine it; never silently drop that garage event.
-                    self.publish_detection(annotated, "image", decision, count, occurred_at)
-                    self.register_local_detection(decision, evidence_path, occurred_at)
-            else:
-                self.publish_detection(annotated, "image", decision, count, occurred_at)
-                self.register_local_detection(decision, evidence_path, occurred_at)
-                if decision == "private" and getattr(self, "policy", None) is None:
-                    self.notify_private(annotated, "image", count)
-        except Exception as error:
-            print(f"DVRIP snapshot analysis failed: {type(error).__name__}: {error}")
-            try:
-                self.fallback(occurred_at)
-            except Exception as fallback_error:
-                print(f"DVRIP video fallback failed: {type(fallback_error).__name__}: {fallback_error}")
+            tracker = SnapshotDwellTracker(self.loitering)
+            deadline = time.monotonic() + self.observation_seconds
+            next_snapshot = time.monotonic()
+            missing = 0
+            duplicate_signatures = 0
+            previous_signature = None
+            last_frame = None
+            last_count = 0
+            samples = 0
+            print(
+                f"Garage snapshot session started: source=DVRIP person, "
+                f"interval={self.interval:.2f}s, window={self.observation_seconds:.1f}s"
+            )
+            while time.monotonic() < deadline:
+                wait = next_snapshot - time.monotonic()
+                if wait > 0:
+                    time.sleep(wait)
+                next_snapshot = time.monotonic() + self.interval
+                try:
+                    frame = self.fetch_snapshot()
+                    signature = self._snapshot_signature(frame)
+                    if signature == previous_signature:
+                        duplicate_signatures += 1
+                        missing += 1
+                        print("Garage snapshot ignored: identical image returned by camera")
+                        if missing > self.max_missing_snapshots and tracker.tracks:
+                            break
+                        continue
+                    previous_signature = signature
+                    samples += 1
+                    annotated, fixed_people, ptz_people = self.detect_people(frame)
+                    last_frame = self._ptz_crop(annotated)
+                    last_count = len(ptz_people)
+                    print(
+                        f"Garage snapshot sample={samples}: fixed={len(fixed_people)}, "
+                        f"ptz={len(ptz_people)}"
+                    )
+                    if fixed_people:
+                        with self.event_lock:
+                            self.last_confirmed_event_at = time.monotonic()
+                        source = "DVRIP snapshot · fixed garage lens"
+                        evidence = self._crop(annotated, "fixed")
+                        evidence_path = self.save_result(
+                            evidence, "fixed_snapshot", "private",
+                            len(fixed_people), occurred_at,
+                        )
+                        self.publish_detection(
+                            evidence, source, "private", len(fixed_people), occurred_at,
+                        )
+                        self.register_local_detection("private", evidence_path, occurred_at)
+                        if getattr(self, "policy", None) is None:
+                            self.notify_alert(
+                                evidence, source, "private", len(fixed_people),
+                            )
+                        print(f"Garage alert: source={source}, persons={len(fixed_people)}")
+                        return
+
+                    if not self.loitering_enabled:
+                        self.save_result(
+                            last_frame, "ptz_snapshots", "tracking_disabled",
+                            len(ptz_people), occurred_at,
+                        )
+                        print("Garage PTZ snapshot tracking is disabled; no alert generated")
+                        return
+
+                    missing = 0 if ptz_people else missing + 1
+                    ready, quality = tracker.update(
+                        self._ptz_crop(frame), ptz_people, time.monotonic(),
+                    )
+                    if quality is not None:
+                        print(f"Garage PTZ background stabilization: inlier_ratio={quality:.2f}")
+                    elif samples > 1:
+                        print("Garage PTZ background stabilization unavailable for this sample")
+                    if ready:
+                        with self.event_lock:
+                            self.last_confirmed_event_at = time.monotonic()
+                        track = max(ready, key=lambda item: item.duration)
+                        source = f"DVRIP snapshots · PTZ tracked {track.duration:.1f}s"
+                        evidence = self._ptz_crop(annotated)
+                        cv2.putText(
+                            evidence,
+                            f"tracked {track.duration:.1f}s radius={track.radius_body_heights:.2f}h",
+                            (24, 48), cv2.FONT_HERSHEY_SIMPLEX, 1.0,
+                            (0, 0, 255), 3,
+                        )
+                        evidence_path = self.save_result(
+                            evidence, "ptz_snapshots", "tracked_presence",
+                            len(ptz_people), occurred_at,
+                        )
+                        self.publish_detection(
+                            evidence, source, "presence", len(ptz_people), occurred_at,
+                        )
+                        self.register_local_detection("presence", evidence_path, occurred_at)
+                        if getattr(self, "policy", None) is None:
+                            self.notify_alert(
+                                evidence, source, "tracked presence", len(ptz_people),
+                            )
+                        print(
+                            f"Garage alert: source={source}, detections={track.detections}, "
+                            f"radius={track.radius_body_heights:.2f}h, "
+                            f"path={track.path_body_heights:.2f}h"
+                        )
+                        return
+                    if missing > self.max_missing_snapshots and tracker.tracks:
+                        print(
+                            f"Garage PTZ session ended: person disappeared for "
+                            f"{missing} snapshots"
+                        )
+                        break
+                except Exception as error:
+                    missing += 1
+                    print(f"Garage snapshot sample failed: {type(error).__name__}: {error}")
+                    if missing > self.max_missing_snapshots and tracker.tracks:
+                        break
+
+            if last_frame is not None:
+                self.save_result(
+                    last_frame, "ptz_snapshots", "walking_or_gone",
+                    last_count, occurred_at,
+                )
+            summaries = "; ".join(
+                f"track={item.track_id} duration={item.duration:.1f}s "
+                f"detections={item.detections} radius={item.radius_body_heights:.2f}h "
+                f"path={item.path_body_heights:.2f}h"
+                for item in tracker.tracks
+            ) or "no stable tracks"
+            print(
+                f"Garage PTZ session completed without alert: samples={samples}, "
+                f"duplicates={duplicate_signatures}, {summaries}"
+            )
+        finally:
+            self.session_lock.release()
 
 
 def main():

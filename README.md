@@ -65,14 +65,17 @@ For the basic RTSP recorder, open `run_windows.bat` in a text editor, set `STREA
 
 #### Windows smart DVRIP + Telegram monitor
 
-The dual-lens property monitor waits for the camera's own DVRIP person event,
-takes one immediate JPEG snapshot, and classifies each detected person as
-`private`, `public`, or `uncertain` from the ground beneath their feet. It opens
-a short RTSP analysis window only when that first image is uncertain.
+The dual-lens Garage monitor waits for the camera's own DVRIP person event and
+then samples fresh JPEG snapshots. A fixed-lens person confirms immediately.
+For the PTZ lens, YOLO observations are matched across snapshots and background
+features compensate for camera movement; the same stationary track must remain
+for at least 4 seconds before it confirms. Missing snapshots are tolerated and
+the public/private area classifier is not part of this decision.
 
 1. Double-click `setup_camera_windows.bat` and give the camera a name, such as `garage` or `back patio`. Choose `property` for the dual-lens public/private classifier, or `presence` when any detected person should alert.
 2. The setup creates one non-secret JSON file per camera and adds it to the ignored `multi-camera.json`. It stores its credentials as Windows user variables derived from the name: `CAMERA_GARAGE_USER`, `CAMERA_GARAGE_PASSWORD`, and, for a property camera, `CAMERA_GARAGE_RTSP_URL`.
-3. Open the property camera JSON only to calibrate its layout, classifier model path, and public/private thresholds. Do not put passwords in it.
+3. Open the property camera JSON only to calibrate its layout and
+   `snapshot_loitering` thresholds. Do not put passwords in it.
 4. Double-click `diagnose_cameras_windows.bat`. It must report `DVRIP OK` and
    `snapshot OK` for every camera.
 5. Double-click `run_multi_windows.bat` to start monitoring. The old
@@ -92,11 +95,11 @@ The assistant uses Windows user environment variables because they are simple, w
 
 The same `CAMERA_<NAME>_USER` and `CAMERA_<NAME>_PASSWORD` are used for both DVRIP and ONVIF. There are no separate DVRIP credential variables to keep in sync.
 
-It never notifies for people confirmed as `public`; `private` and `uncertain`
-results are evaluated by the current local alarm mode. Every result is retained
-under the configured review directory in `private`, `public`, or `uncertain`
-folders. Notification text includes the evidence source. Press `Ctrl+C` in its
-terminal window to stop it.
+Garage fixed-lens and persistent PTZ results are evaluated by the current local
+alarm mode. The full dual-lens image is used for YOLO, while Telegram evidence
+is cropped to the relevant single lens and encoded as a standard JPEG. Backyard
+keeps its existing snapshot-first presence behavior. Press `Ctrl+C` in the
+terminal window to stop the monitor.
 
 The alarm controller runs locally in Python on Windows, macOS, and Linux. Its
 automatic mode disarms from 08:30 to 23:00 when a configured phone is home,
@@ -105,7 +108,10 @@ minutes of router-confirmed absence. Unknown router state preserves the current
 mode. Manual `disarmed`, `armed_home`, and `armed_away` selections persist.
 
 Telegram accepts `/auto`, `/manual`, `/away`, `/home`, `/disarm`, `/status`,
-`/resume`, `/until8`, `OK`, and durations such as `10m`, `1h`, or `1h30m`.
+`/resume`, `/until8`, `/photo`, `/video`, `OK`, and durations such as `10m`,
+`1h`, or `1h30m`. `/photo` sends a current image from both cameras; `/video`
+starts both RTSP captures together and sends two directly playable 5-second MP4
+clips. These media commands also work while the alarm is disarmed.
 Only messages from the configured chat are accepted. Detections and local
 evidence continue while alerts are paused or disarmed, and all operator state is
 stored atomically in the ignored `.security-cam-state.json` file. Credentials
@@ -121,11 +127,14 @@ disable reminders. Once an outage has produced an alert, another message is
 sent when that camera reconnects.
 
 The multi-camera service sends technical health messages through a dedicated,
-unmuted Telegram path even when detection output is MQTT-only. Its camera
-default is 5 minutes followed by reminders every 6 hours. Router reachability is reported on state
-changes, and Internet outages are timed locally so their full duration can be
-reported as soon as connectivity returns. Pausing detection notifications does
-not pause these health messages.
+unmuted Telegram path even when detection output is MQTT-only. Router outages
+are persisted and included in one daily summary at 19:00 local time; a router
+still down after one hour produces one immediate alert. Internet outages shorter
+than the configurable 10-minute threshold appear only in the summary. Longer
+Internet outages produce a pending recovery alert with their full duration, and
+a summary that falls due while offline is delivered after connectivity returns.
+Configure these values under `health`; pausing detection notifications does not
+pause health messages.
 
 #### Home Assistant via MQTT
 

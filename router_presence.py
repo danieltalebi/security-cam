@@ -367,10 +367,12 @@ class RouterPresenceMonitor:
         config: dict,
         publish: Callable[[str, dict], None],
         notify: Callable[[str], object] | None = None,
+        history=None,
     ):
         self.interval = max(10.0, float(config.get("poll_interval_seconds", 30)))
         self.publish = publish
         self.notify = notify
+        self.history = history
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         self.sources: list[RouterSource] = []
@@ -480,6 +482,10 @@ class RouterPresenceMonitor:
         any_source_available = any(sources.values())
         devices = self._device_states(observations)
 
+        if getattr(self, "history", None) is not None:
+            for name, available in sources.items():
+                self.history.set_router(name, available, now)
+
         if self._last_sources is None:
             source_summary = ", ".join(
                 f"{name}={'online' if available else 'offline'}"
@@ -494,7 +500,6 @@ class RouterPresenceMonitor:
             for name, available in sources.items():
                 if not available:
                     self._source_offline_since[name] = now
-                    self._notify(f"⚠️ Router {name} cannot be contacted.")
         else:
             for name, available in sources.items():
                 previous = self._last_sources.get(name)
@@ -507,7 +512,6 @@ class RouterPresenceMonitor:
                     self._source_offline_since[name] = now
                     message = f"⚠️ Router {name} cannot be contacted."
                 print(message)
-                self._notify(message)
 
             if any_source_available and self._last_devices is not None:
                 for name, present in devices.items():
@@ -525,10 +529,6 @@ class RouterPresenceMonitor:
 
         if self._last_state is not None and state != self._last_state:
             print(f"Wi-Fi presence: {state} (changed from {self._last_state})")
-            if state == "unavailable":
-                self._notify("⚠️ Neither configured router can be contacted; presence is unavailable.")
-            elif self._last_state == "unavailable":
-                self._notify(f"✅ Router presence is available again; current state: {state}.")
 
         self._last_sources = sources
         if any_source_available:
