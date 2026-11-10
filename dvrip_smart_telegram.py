@@ -340,7 +340,10 @@ class SmartAlarm:
                         self.publish_detection(
                             evidence, source, "presence", len(ptz_people), occurred_at,
                         )
-                        self.register_local_detection("presence", evidence_path, occurred_at)
+                        # Keep the Home Assistant classification compatible,
+                        # but identify the local policy event as a doorbell-like
+                        # visitor which must also alert while disarmed.
+                        self.register_local_detection("visitor", evidence_path, occurred_at)
                         if getattr(self, "policy", None) is None:
                             self.notify_alert(
                                 evidence, source, "tracked presence", len(ptz_people),

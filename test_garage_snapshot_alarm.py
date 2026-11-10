@@ -98,6 +98,7 @@ class GarageSnapshotAlarmTests(unittest.TestCase):
         self.assertIn("PTZ tracked 4.0s", published[1])
         self.assertEqual(published[2], "presence")
         alarm.register_local_detection.assert_called_once()
+        self.assertEqual(alarm.register_local_detection.call_args.args[0], "visitor")
 
 
 if __name__ == "__main__":

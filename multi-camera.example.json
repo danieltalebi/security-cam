@@ -23,8 +23,8 @@
     "internet_failure_threshold": 2,
     "internet_outage_alert_seconds": 600,
     "router_offline_alert_seconds": 3600,
-    "daily_summary_time": "19:00",
-    "timezone": "Australia/Sydney",
+    "daily_summary_time": "18:00",
+    "timezone": "America/Argentina/Buenos_Aires",
     "connectivity_state_file": ".connectivity-history.json"
   },
   "alarm_policy": {
@@ -44,11 +44,11 @@
     "poll_interval_seconds": 30,
     "devices": [
       {
-        "name": "Daniel iPhone",
+        "name": "iPhone",
         "macs": ["00:00:00:00:00:01"]
       },
       {
-        "name": "Second iPhone",
+        "name": "iPhone 2",
         "macs": ["00:00:00:00:00:02"]
       }
     ],

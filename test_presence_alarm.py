@@ -1,11 +1,14 @@
 import threading
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
 
 from multi_camera_monitor import (
-    PresenceAlarm, handle_interior_presence, send_incident_notification,
+    PresenceAlarm, daily_alarm_reminder, handle_interior_presence,
+    send_incident_notification,
 )
 
 
@@ -149,6 +152,41 @@ class PresenceAlarmTests(unittest.TestCase):
         self.assertTrue(sent)
         channel.send_notification_message.assert_called_once()
         channel.send_photo.assert_not_called()
+
+    def test_camera_incident_captions_identify_each_detection_path(self):
+        with tempfile.TemporaryDirectory() as folder:
+            evidence = Path(folder) / "evidence.jpg"
+            evidence.write_bytes(b"jpeg")
+            cases = (
+                ("garage", "private", "lente fijo"),
+                ("garage", "visitor", "lente móvil PTZ"),
+                ("backyard", "presence", "Backyard"),
+            )
+            for camera, classification, expected in cases:
+                with self.subTest(camera=camera, classification=classification):
+                    channel = MagicMock()
+                    channel.send_photo.return_value = True
+                    sent = send_incident_notification(channel, {
+                        "id": "1234567890abcdef",
+                        "camera": camera,
+                        "classification": classification,
+                        "evidence_path": str(evidence),
+                    })
+                    self.assertTrue(sent)
+                    self.assertIn(expected, channel.send_photo.call_args.args[1])
+
+    def test_daily_alarm_reminder_only_for_manual_disarmed_mode(self):
+        policy = MagicMock()
+        policy.snapshot.return_value = {"control": "manual", "mode": "disarmed"}
+        self.assertIn("manual y desarmada", daily_alarm_reminder(policy))
+
+        for state in (
+            {"control": "automatic", "mode": "disarmed"},
+            {"control": "manual", "mode": "armed_home"},
+            {"control": "manual", "mode": "armed_away"},
+        ):
+            policy.snapshot.return_value = state
+            self.assertIsNone(daily_alarm_reminder(policy))
 
 
 if __name__ == "__main__":

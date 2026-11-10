@@ -268,6 +268,11 @@ class AlarmPolicyController:
             self._reload_if_changed()
             if classification == "public":
                 return False
+            # A PTZ visitor is someone who remained at the Garage access long
+            # enough to be confirmed by snapshot tracking.  It acts as a
+            # doorbell and is therefore independent of the alarm mode.
+            if classification == "visitor":
+                return True
             mode = self._state["mode"]
             if mode == "disarmed":
                 return False
@@ -424,6 +429,12 @@ class AlarmPolicyController:
             return f"{count} incidente(s) reconocido(s)." if count else "No hay incidentes activos para reconocer."
         if normalized == "status":
             state = self.snapshot()
+            mode_labels = {
+                "disarmed": "desarmada",
+                "armed_home": "armada en casa",
+                "armed_away": "armada fuera de casa",
+            }
+            control_labels = {"automatic": "automático", "manual": "manual"}
             pause = (
                 f"pausadas por {_format_duration(state['notifications_pause_remaining'])}"
                 if state["notifications_paused"] else "activas"
@@ -432,12 +443,19 @@ class AlarmPolicyController:
                 f"{name}={'presente' if value is True else 'ausente' if value is False else 'desconocido'}"
                 for name, value in state["presence_devices"].items()
             ) or state["presence"]
+            routers = ", ".join(
+                f"{name}={'en línea' if value.get('available') is True else 'sin conexión'}"
+                for name, value in state["router_sources"].items()
+                if isinstance(value, dict)
+            ) or "sin datos"
             incidents = state["active_incidents"]
             incident_text = ", ".join(
                 f"{item['camera']}{' (OK)' if item.get('acknowledged') else ''}" for item in incidents
             ) or "ninguno"
             return (
-                f"Modo {state['mode']} ({state['control']}). Presencia: {devices}. "
+                f"Modo de alarma: {mode_labels.get(state['mode'], state['mode'])}. "
+                f"Control: {control_labels.get(state['control'], state['control'])}. "
+                f"Presencia: {devices}. Routers: {routers}. "
                 f"Notificaciones {pause}. Incidentes: {incident_text}."
             )
         seconds = _duration(normalized)

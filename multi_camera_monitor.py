@@ -300,15 +300,33 @@ def send_incident_notification(channel: TelegramNotifier, incident: dict) -> boo
     """Send image incidents and text-only interior sensor incidents."""
     evidence_path = incident.get("evidence_path")
     if evidence_path:
+        camera = str(incident.get("camera", "cámara"))
+        classification = str(incident.get("classification", "detection"))
+        if camera.lower() == "garage" and classification == "visitor":
+            description = "🔔 Garage · Persona esperando en el acceso (lente móvil PTZ)"
+        elif camera.lower() == "garage" and classification == "private":
+            description = "🚨 Garage · Persona detectada dentro de la propiedad (lente fijo)"
+        elif camera.lower() == "backyard":
+            description = "🚨 Backyard · Persona detectada"
+        else:
+            description = f"🚨 {camera} · {classification}"
         caption = (
-            f"🚨 {incident['camera']} · {incident.get('classification', 'detection')} · "
-            f"incidente {incident['id'][:8]}. Responda OK para reconocer."
+            f"{description} · incidente {incident['id'][:8]}. "
+            "Responda OK para reconocer."
         )
         return channel.send_photo(Path(str(evidence_path)).read_bytes(), caption)
     return channel.send_notification_message(
         "🚨 ALARMA FUERA · Presencia detectada por el sensor interior. "
         f"Incidente {incident['id'][:8]}. Responda OK para reconocer."
     )
+
+
+def daily_alarm_reminder(policy) -> str | None:
+    """Return the reminder appended to the daily summary when action is needed."""
+    state = policy.snapshot()
+    if state.get("control") == "manual" and state.get("mode") == "disarmed":
+        return "⚠️ Recordatorio: la alarma sigue en control manual y desarmada."
+    return None
 
 
 def main() -> None:
@@ -381,8 +399,9 @@ def main() -> None:
             router_alert_seconds=float(
                 health_config.get("router_offline_alert_seconds", 3600)
             ),
-            summary_time=str(health_config.get("daily_summary_time", "19:00")),
+            summary_time=str(health_config.get("daily_summary_time", "18:00")),
             timezone=health_config.get("timezone"),
+            summary_context=lambda: daily_alarm_reminder(policy),
         ).start()
     if system_notifier and health_config.get("internet_enabled", True):
         from internet_connectivity import InternetConnectivityMonitor

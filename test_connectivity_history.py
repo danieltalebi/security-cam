@@ -109,6 +109,32 @@ class ConnectivityHistoryTests(unittest.TestCase):
             self.assertEqual(len(summaries), 1)
             self.assertIn("Internet: en línea", summaries[0])
 
+    def test_summary_runs_at_18_argentina_and_includes_alarm_context(self):
+        with tempfile.TemporaryDirectory() as folder:
+            messages = []
+            before = datetime(2026, 1, 1, 20, 59, tzinfo=timezone.utc).timestamp()
+            due = datetime(2026, 1, 1, 21, 0, tzinfo=timezone.utc).timestamp()
+            history = ConnectivityHistory(
+                Path(folder) / "connectivity.json",
+                messages.append,
+                ["asus", "huawei"],
+                summary_time="18:00",
+                timezone="America/Argentina/Buenos_Aires",
+                summary_context=lambda: "alarma manual y desarmada",
+                clock=lambda: before,
+            )
+            history.set_internet(True, before)
+            history.set_router("asus", True, before)
+            history.set_router("huawei", True, before)
+
+            history.tick(due - 1)
+            self.assertEqual(messages, [])
+            history.tick(due)
+
+            self.assertEqual(len(messages), 1)
+            self.assertIn("Resumen diario", messages[0])
+            self.assertIn("alarma manual y desarmada", messages[0])
+
 
 if __name__ == "__main__":
     unittest.main()

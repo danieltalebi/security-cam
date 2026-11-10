@@ -24,8 +24,9 @@ class ConnectivityHistory:
         *,
         internet_threshold_seconds: float = 600,
         router_alert_seconds: float = 3600,
-        summary_time: str = "19:00",
+        summary_time: str = "18:00",
         timezone: str | None = None,
+        summary_context: Callable[[], str | None] | None = None,
         clock: Callable[[], float] = time.time,
         start_thread: bool = False,
     ):
@@ -50,6 +51,7 @@ class ConnectivityHistory:
                 )
         else:
             self.timezone = datetime.now().astimezone().tzinfo
+        self.summary_context = summary_context
         self.clock = clock
         self.lock = threading.RLock()
         self.delivery_lock = threading.Lock()
@@ -318,11 +320,20 @@ class ConnectivityHistory:
                 f"{format_duration(end - float(incident['started_at']))}{suffix}"
             )
         incidents = "\n".join(incident_lines) or "• Sin caídas desde el resumen anterior."
-        return (
+        message = (
             "📡 Resumen diario de conectividad\n"
             "Estado actual:\n" + "\n".join(status_lines) +
             "\nCaídas desde el resumen anterior:\n" + incidents
         )
+        if self.summary_context is not None:
+            try:
+                context = self.summary_context()
+            except Exception as error:
+                print(f"Daily summary context failed: {type(error).__name__}: {error}")
+            else:
+                if context:
+                    message += "\n\n" + str(context)
+        return message
 
     def _timestamp(self, value: float) -> str:
         return datetime.fromtimestamp(value, self.timezone).strftime("%Y-%m-%d %H:%M:%S %Z")

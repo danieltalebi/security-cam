@@ -111,6 +111,45 @@ class AlarmPolicyTests(unittest.TestCase):
         policy.set_manual("disarmed", clock.value)
         self.assertFalse(policy.camera_may_alert("exterior", "private"))
 
+    def test_tracked_garage_visitor_alerts_while_disarmed_but_respects_pause(self):
+        clock = Clock(self.local_epoch(12))
+        policy = self.controller(clock)
+        policy.set_manual("disarmed", clock.value)
+        occurred = datetime.fromtimestamp(clock.value).astimezone()
+
+        self.assertIsNone(
+            policy.record_detection("garage", "exterior", "private", "fixed.jpg", occurred)
+        )
+        visitor = policy.record_detection(
+            "garage", "exterior", "visitor", "ptz.jpg", occurred,
+        )
+
+        self.assertIsNotNone(visitor)
+        self.assertEqual(visitor["classification"], "visitor")
+        self.assertEqual(len(policy.due_notifications(clock.value)), 1)
+        policy.pause_for(60, clock.value)
+        self.assertEqual(policy.due_notifications(clock.value), [])
+
+    def test_status_uses_friendly_alarm_phone_and_router_names(self):
+        clock = Clock(self.local_epoch(12))
+        policy = self.controller(clock)
+        policy.observe_presence("home", {
+            "devices": {"iPhone": False, "iPhone 2": True},
+            "sources": {
+                "asus": {"available": True},
+                "huawei": {"available": False},
+            },
+        }, clock.value)
+
+        status = policy.handle_command("/status")
+
+        self.assertIn("Modo de alarma: desarmada", status)
+        self.assertIn("Control: automático", status)
+        self.assertIn("iPhone=ausente", status)
+        self.assertIn("iPhone 2=presente", status)
+        self.assertIn("asus=en línea", status)
+        self.assertIn("huawei=sin conexión", status)
+
     def test_incidents_group_back_off_acknowledge_and_close(self):
         clock = Clock(self.local_epoch(12))
         policy = self.controller(clock)
