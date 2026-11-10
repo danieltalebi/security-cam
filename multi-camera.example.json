@@ -30,6 +30,7 @@
   "alarm_policy": {
     "state_file": ".security-cam-state.json",
     "automatic": {
+      "timezone": "America/Argentina/Buenos_Aires",
       "day_start": "08:30",
       "night_start": "23:00",
       "away_debounce_seconds": 300

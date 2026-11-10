@@ -17,6 +17,7 @@ from copy import deepcopy
 from datetime import datetime, time as clock_time, timedelta
 from pathlib import Path
 from typing import Callable
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 ALARM_MODES = {"disarmed", "armed_home", "armed_away"}
@@ -81,6 +82,14 @@ class AlarmPolicyController:
         incidents = config.get("incidents", config)
         self.day_start = _parse_clock(automatic.get("day_start", "08:30"), "08:30")
         self.night_start = _parse_clock(automatic.get("night_start", "23:00"), "23:00")
+        timezone_name = automatic.get("timezone")
+        if timezone_name:
+            try:
+                self.timezone = ZoneInfo(str(timezone_name))
+            except ZoneInfoNotFoundError as error:
+                raise ValueError(f"Unknown alarm policy timezone: {timezone_name!r}") from error
+        else:
+            self.timezone = datetime.now().astimezone().tzinfo
         self.away_debounce = max(0.0, float(automatic.get("away_debounce_seconds", 300)))
         self.incident_close = max(1.0, float(incidents.get("close_after_seconds", 60)))
         backoff = incidents.get("notification_backoff_seconds", [0, 60, 180, 300, 600])
@@ -180,7 +189,7 @@ class AlarmPolicyController:
             return False
         previous = self._state["mode"]
         if self._state["presence"] == "home":
-            self._state["mode"] = self._scheduled_home_mode(datetime.fromtimestamp(now).astimezone())
+            self._state["mode"] = self._scheduled_home_mode(datetime.fromtimestamp(now, self.timezone))
         elif self._state["presence"] == "away":
             away_since = self._state.get("away_since")
             if away_since is not None and now - float(away_since) >= self.away_debounce:

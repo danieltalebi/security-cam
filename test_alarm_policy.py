@@ -1,6 +1,6 @@
 import tempfile
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from alarm_policy import AlarmPolicyController
@@ -54,6 +54,19 @@ class AlarmPolicyTests(unittest.TestCase):
         clock.value = self.local_epoch(8, 30)
         policy.tick(clock.value)
         self.assertEqual(policy.snapshot()["mode"], "disarmed")
+
+    def test_automatic_schedule_uses_configured_argentina_timezone(self):
+        argentina_day = datetime(2026, 1, 1, 21, 0, tzinfo=timezone.utc).timestamp()
+        clock = Clock(argentina_day)
+        policy = self.controller(
+            clock, automatic={"timezone": "America/Argentina/Buenos_Aires"},
+        )
+        policy.observe_presence("home", {"devices": {"iPhone": True}}, clock.value)
+        self.assertEqual(policy.snapshot()["mode"], "disarmed")
+
+        clock.value = datetime(2026, 1, 2, 2, 30, tzinfo=timezone.utc).timestamp()
+        policy.tick(clock.value)
+        self.assertEqual(policy.snapshot()["mode"], "armed_home")
 
     def test_continuous_absence_arms_after_five_minutes_and_return_is_immediate(self):
         clock = Clock(self.local_epoch(12))
