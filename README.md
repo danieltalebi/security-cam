@@ -228,7 +228,10 @@ the alarm mode, control mode, and presence used for that decision.
 The Home Assistant package bridges
 `binary_sensor.sensor_de_presencia_humana_motion` to the local controller over
 MQTT. Python ignores that sensor in `disarmed` and `armed_home`, and creates a
-text-only acknowledged incident in `armed_away`. While armed away, the package
+text-only acknowledged incident in `armed_away`. The bridge publishes both when
+the sensor turns on and when `armed_away` begins while the sensor is already on,
+so arming the house cannot miss an occupant already detected by the mmWave
+sensor. While armed away, the package
 also immediately turns off a light whose entity ID or friendly name contains
 `amarill` or `yellow`; other lights are not affected.
 

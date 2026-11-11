@@ -59,9 +59,20 @@ automation:
     max: 20
     triggers:
       - trigger: state
+        id: sensor_turned_on
         entity_id: binary_sensor.sensor_de_presencia_humana_motion
-        from: "off"
         to: "on"
+      # If somebody is already in the room when the operator arms away, the
+      # mmWave sensor remains on and there is no new off -> on edge.  Forward
+      # the current observation when armed-away begins as well.
+      - trigger: state
+        id: alarm_armed_away
+        entity_id: sensor.security_camera_alarm_mode
+        to: armed_away
+    conditions:
+      - condition: state
+        entity_id: binary_sensor.sensor_de_presencia_humana_motion
+        state: "on"
     actions:
       - action: mqtt.publish
         data:
