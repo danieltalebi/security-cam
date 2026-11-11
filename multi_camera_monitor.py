@@ -451,6 +451,7 @@ def main() -> None:
 
     notification_channels: dict[str, TelegramNotifier] = {}
     media_sources = []
+    photo_sources = []
     for entry in multi.get("cameras", []):
         name = entry.get("name")
         mode = entry["mode"]
@@ -490,30 +491,21 @@ def main() -> None:
             handler = alarm.handle_event
         else:
             raise RuntimeError(f"{name}: unsupported mode {mode!r}.")
-        from camera_media import CameraMediaSource
+        from camera_media import configured_media_sources
 
         snapshot = config["snapshot"]
-        lens = None
-        layout_size = None
-        if config.get("layout"):
-            media_region = str(config.get("telegram_media", {}).get("lens", "ptz"))
-            if media_region not in config["layout"]:
-                raise RuntimeError(f"{name}: telegram_media.lens {media_region!r} is not in layout.")
-            lens = tuple(map(int, config["layout"][media_region]))
-            layout_size = (
-                max(int(bounds[2]) for bounds in config["layout"].values()),
-                max(int(bounds[3]) for bounds in config["layout"].values()),
-            )
-        media_sources.append(CameraMediaSource(
+        video_source, still_sources = configured_media_sources(
             name=name,
             snapshot_url=expand_host(snapshot["url"], config, name),
             username=user,
             password=password,
             query_auth=bool(snapshot.get("xmeye_query_auth", False)),
             stream=stream,
-            lens=lens,
-            layout_size=layout_size,
-        ))
+            layout=config.get("layout"),
+            telegram_media=config.get("telegram_media"),
+        )
+        media_sources.append(video_source)
+        photo_sources.extend(still_sources)
         connectivity = CameraConnectivityAlerts(
             name, system_notifier, thresholds=camera_thresholds,
             repeat_seconds=camera_repeat_seconds, bypass_mute=True,
@@ -541,7 +533,9 @@ def main() -> None:
     if system_notifier and media_sources:
         from camera_media import CameraMediaCommands, chain_command_handlers
 
-        media_commands = CameraMediaCommands(media_sources, system_notifier)
+        media_commands = CameraMediaCommands(
+            media_sources, system_notifier, photo_sources=photo_sources,
+        )
         shared_handler = chain_command_handlers(media_commands, policy.handle_command)
         controllers = {id(system_notifier): system_notifier}
         controllers.update({id(channel): channel for channel in notification_channels.values()})

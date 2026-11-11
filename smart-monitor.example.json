@@ -81,7 +81,8 @@
     "cache_bust_query": true
   },
   "telegram_media": {
-    "lens": "ptz"
+    "photo_lenses": ["fixed", "ptz"],
+    "video_lens": "ptz"
   },
   "telegram": {
     "token_env": "TELEGRAM_BOT_TOKEN",

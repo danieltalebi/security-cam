@@ -9,6 +9,7 @@ import numpy as np
 from camera_media import (
     CameraMediaCommands,
     CameraMediaSource,
+    configured_media_sources,
     normalized_snapshot,
 )
 from telegram_notify import TelegramNotifier
@@ -43,6 +44,49 @@ class CameraMediaTests(unittest.TestCase):
         self.assertEqual(decoded.shape[:2], (50, 100))
         self.assertGreater(float(decoded[:, :, 1].mean()), 240)
         self.assertLess(float(decoded[:, :, 2].mean()), 15)
+
+    def test_dual_lens_garage_builds_both_photo_sources_and_keeps_ptz_video(self):
+        video, photos = configured_media_sources(
+            "garage", "http://garage/snapshot", "user", "password", False,
+            "rtsp://garage/stream",
+            layout={"fixed": [0, 0, 100, 50], "ptz": [0, 50, 100, 100]},
+            telegram_media={
+                "photo_lenses": ["fixed", "ptz"],
+                "video_lens": "ptz",
+            },
+        )
+
+        self.assertEqual(video.name, "Garage")
+        self.assertEqual(video.lens, (0, 50, 100, 100))
+        self.assertEqual(
+            [(item.name, item.lens) for item in photos],
+            [
+                ("Garage · lente fijo", (0, 0, 100, 50)),
+                ("Garage · lente móvil", (0, 50, 100, 100)),
+            ],
+        )
+
+    def test_photo_command_sends_each_garage_lens_and_backyard(self):
+        garage_fixed = source("Garage · lente fijo", (0, 0, 100, 50))
+        garage_ptz = source("Garage · lente móvil", (0, 50, 100, 100))
+        backyard = source("Backyard")
+        notifier = MagicMock()
+        commands = CameraMediaCommands(
+            [garage_ptz, backyard], notifier,
+            photo_sources=[garage_fixed, garage_ptz, backyard],
+        )
+
+        with patch("camera_media.normalized_snapshot", return_value=b"jpeg"):
+            commands._photos()
+
+        self.assertEqual(
+            [call.args[1] for call in notifier.send_photo.call_args_list],
+            [
+                "📷 Garage · lente fijo",
+                "📷 Garage · lente móvil",
+                "📷 Backyard",
+            ],
+        )
 
     def test_photo_sends_working_camera_and_reports_failed_camera(self):
         garage = source("Garage")

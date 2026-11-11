@@ -29,6 +29,61 @@ class CameraMediaSource:
     layout_size: tuple[int, int] | None = None
 
 
+def configured_media_sources(
+    name: str,
+    snapshot_url: str,
+    username: str,
+    password: str,
+    query_auth: bool,
+    stream: str | None,
+    layout: dict | None = None,
+    telegram_media: dict | None = None,
+) -> tuple[CameraMediaSource, list[CameraMediaSource]]:
+    """Build one video source and every requested still-image lens."""
+    display_name = name.title()
+    common = {
+        "snapshot_url": snapshot_url,
+        "username": username,
+        "password": password,
+        "query_auth": query_auth,
+        "stream": stream,
+    }
+    if not layout:
+        source = CameraMediaSource(name=display_name, **common)
+        return source, [source]
+
+    media = telegram_media or {}
+    video_region = str(media.get("video_lens", media.get("lens", "ptz")))
+    photo_regions = media.get("photo_lenses", [video_region])
+    if not isinstance(photo_regions, list) or not photo_regions:
+        raise RuntimeError(f"{name}: telegram_media.photo_lenses must be a non-empty list.")
+    regions = [str(region) for region in photo_regions]
+    for region in [video_region, *regions]:
+        if region not in layout:
+            raise RuntimeError(f"{name}: Telegram media lens {region!r} is not in layout.")
+
+    layout_size = (
+        max(int(bounds[2]) for bounds in layout.values()),
+        max(int(bounds[3]) for bounds in layout.values()),
+    )
+
+    def build(region: str, source_name: str) -> CameraMediaSource:
+        return CameraMediaSource(
+            name=source_name,
+            lens=tuple(map(int, layout[region])),
+            layout_size=layout_size,
+            **common,
+        )
+
+    video_source = build(video_region, display_name)
+    lens_labels = {"fixed": "lente fijo", "ptz": "lente móvil"}
+    photo_sources = [
+        build(region, f"{display_name} · {lens_labels.get(region, region)}")
+        for region in dict.fromkeys(regions)
+    ]
+    return video_source, photo_sources
+
+
 def _crop_lens(frame: np.ndarray, source: CameraMediaSource) -> np.ndarray:
     if source.lens is None or source.layout_size is None:
         return np.ascontiguousarray(frame)
@@ -126,8 +181,14 @@ def record_video(
 class CameraMediaCommands:
     """Run camera requests off the Telegram polling and monitor threads."""
 
-    def __init__(self, sources: list[CameraMediaSource], notifier):
+    def __init__(
+        self,
+        sources: list[CameraMediaSource],
+        notifier,
+        photo_sources: list[CameraMediaSource] | None = None,
+    ):
         self.sources = sources
+        self.photo_sources = photo_sources or sources
         self.notifier = notifier
         self._busy = threading.Lock()
 
@@ -142,7 +203,7 @@ class CameraMediaCommands:
             target=self._run, args=(kind,), name=f"telegram-{kind}", daemon=True,
         ).start()
         return (
-            "Tomando fotos de Garage y Backyard…"
+            "Tomando fotos de Garage (lente fijo y móvil) y Backyard…"
             if kind == "photo" else
             "Grabando 5 segundos de Garage y Backyard…"
         )
@@ -169,10 +230,10 @@ class CameraMediaCommands:
     def _photos(self) -> None:
         results: dict[str, bytes] = {}
         failures: dict[str, str] = {}
-        with ThreadPoolExecutor(max_workers=len(self.sources)) as executor:
+        with ThreadPoolExecutor(max_workers=len(self.photo_sources)) as executor:
             pending = {
                 executor.submit(normalized_snapshot, source): source
-                for source in self.sources
+                for source in self.photo_sources
             }
             for future in as_completed(pending):
                 source = pending[future]
@@ -180,7 +241,7 @@ class CameraMediaCommands:
                     results[source.name] = future.result()
                 except Exception as error:
                     failures[source.name] = self._safe_error(source, error)
-        for source in self.sources:
+        for source in self.photo_sources:
             image = results.get(source.name)
             if image is not None:
                 self.notifier.send_photo(image, f"📷 {source.name}")
