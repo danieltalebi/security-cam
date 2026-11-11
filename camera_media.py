@@ -76,11 +76,28 @@ def configured_media_sources(
         )
 
     video_source = build(video_region, display_name)
-    lens_labels = {"fixed": "lente fijo", "ptz": "lente móvil"}
-    photo_sources = [
-        build(region, f"{display_name} · {lens_labels.get(region, region)}")
-        for region in dict.fromkeys(regions)
-    ]
+    regions = list(dict.fromkeys(regions))
+    lens_labels = {"fixed": "fijo", "ptz": "móvil"}
+    if len(regions) == 1:
+        region = regions[0]
+        photo_sources = [
+            build(region, f"{display_name} · lente {lens_labels.get(region, region)}")
+        ]
+    else:
+        selected = [layout[region] for region in regions]
+        combined_bounds = (
+            min(int(bounds[0]) for bounds in selected),
+            min(int(bounds[1]) for bounds in selected),
+            max(int(bounds[2]) for bounds in selected),
+            max(int(bounds[3]) for bounds in selected),
+        )
+        labels = " y ".join(lens_labels.get(region, region) for region in regions)
+        photo_sources = [CameraMediaSource(
+            name=f"{display_name} · lentes {labels}",
+            lens=combined_bounds,
+            layout_size=layout_size,
+            **common,
+        )]
     return video_source, photo_sources
 
 
@@ -203,7 +220,7 @@ class CameraMediaCommands:
             target=self._run, args=(kind,), name=f"telegram-{kind}", daemon=True,
         ).start()
         return (
-            "Tomando fotos de Garage (lente fijo y móvil) y Backyard…"
+            "Tomando fotos de Garage y Backyard…"
             if kind == "photo" else
             "Grabando 5 segundos de Garage y Backyard…"
         )

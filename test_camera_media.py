@@ -45,7 +45,23 @@ class CameraMediaTests(unittest.TestCase):
         self.assertGreater(float(decoded[:, :, 1].mean()), 240)
         self.assertLess(float(decoded[:, :, 2].mean()), 15)
 
-    def test_dual_lens_garage_builds_both_photo_sources_and_keeps_ptz_video(self):
+    def test_combined_garage_photo_preserves_fixed_and_mobile_lenses(self):
+        frame = np.zeros((100, 100, 3), dtype=np.uint8)
+        frame[:50] = (0, 0, 255)
+        frame[50:] = (0, 255, 0)
+        ok, vendor_jpeg = cv2.imencode(".jpg", frame)
+        self.assertTrue(ok)
+        garage = source("Garage · lentes fijo y móvil", (0, 0, 100, 100))
+
+        with patch("camera_media.download_snapshot", return_value=vendor_jpeg.tobytes()):
+            result = normalized_snapshot(garage)
+
+        decoded = cv2.imdecode(np.frombuffer(result, np.uint8), cv2.IMREAD_COLOR)
+        self.assertEqual(decoded.shape[:2], (100, 100))
+        self.assertGreater(float(decoded[:45, :, 2].mean()), 240)
+        self.assertGreater(float(decoded[55:, :, 1].mean()), 240)
+
+    def test_dual_lens_garage_builds_one_combined_photo_and_keeps_ptz_video(self):
         video, photos = configured_media_sources(
             "garage", "http://garage/snapshot", "user", "password", False,
             "rtsp://garage/stream",
@@ -61,19 +77,17 @@ class CameraMediaTests(unittest.TestCase):
         self.assertEqual(
             [(item.name, item.lens) for item in photos],
             [
-                ("Garage · lente fijo", (0, 0, 100, 50)),
-                ("Garage · lente móvil", (0, 50, 100, 100)),
+                ("Garage · lentes fijo y móvil", (0, 0, 100, 100)),
             ],
         )
 
-    def test_photo_command_sends_each_garage_lens_and_backyard(self):
-        garage_fixed = source("Garage · lente fijo", (0, 0, 100, 50))
-        garage_ptz = source("Garage · lente móvil", (0, 50, 100, 100))
+    def test_photo_command_sends_combined_garage_and_backyard(self):
+        garage = source("Garage · lentes fijo y móvil", (0, 0, 100, 100))
         backyard = source("Backyard")
         notifier = MagicMock()
         commands = CameraMediaCommands(
-            [garage_ptz, backyard], notifier,
-            photo_sources=[garage_fixed, garage_ptz, backyard],
+            [garage, backyard], notifier,
+            photo_sources=[garage, backyard],
         )
 
         with patch("camera_media.normalized_snapshot", return_value=b"jpeg"):
@@ -82,8 +96,7 @@ class CameraMediaTests(unittest.TestCase):
         self.assertEqual(
             [call.args[1] for call in notifier.send_photo.call_args_list],
             [
-                "📷 Garage · lente fijo",
-                "📷 Garage · lente móvil",
+                "📷 Garage · lentes fijo y móvil",
                 "📷 Backyard",
             ],
         )
