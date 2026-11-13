@@ -220,9 +220,9 @@ class CameraMediaCommands:
             target=self._run, args=(kind,), name=f"telegram-{kind}", daemon=True,
         ).start()
         return (
-            "Tomando fotos de Garage y Backyard…"
+            "📸 Tomando fotos de Garage y Backyard…"
             if kind == "photo" else
-            "Grabando 5 segundos de Garage y Backyard…"
+            "🎬 Grabando 5 segundos de Garage y Backyard…"
         )
 
     def _run(self, kind: str) -> None:
@@ -234,7 +234,8 @@ class CameraMediaCommands:
         except Exception as error:
             try:
                 self.notifier.send_message(
-                    f"No se pudo completar /{kind}: {type(error).__name__}: {error}"
+                    f"⚠️ NO SE PUDO COMPLETAR /{kind.upper()}\n"
+                    f"🧰 {type(error).__name__}: {error}"
                 )
             except Exception as notify_error:
                 print(
@@ -297,8 +298,9 @@ class CameraMediaCommands:
             return
         details = "; ".join(f"{name}: {reason}" for name, reason in failures.items())
         self.notifier.send_message(
-            f"⚠️ Falló la captura de {kind} para: {details}. "
-            "Los resultados disponibles de las otras cámaras sí fueron enviados."
+            f"⚠️ CAPTURA PARCIAL DE {kind.upper()}\n"
+            f"❌ Falló: {details}\n"
+            "✅ Los resultados disponibles de las otras cámaras fueron enviados."
         )
 
     @staticmethod

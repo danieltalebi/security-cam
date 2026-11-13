@@ -38,7 +38,7 @@ class CameraConnectivityTests(unittest.TestCase):
         with patch("telegram_notify.time.time", return_value=4700):
             self.alerts.set_online(True)
         self.assertEqual(len(self.notifier.messages), 4)
-        self.assertIn("back online", self.notifier.messages[-1])
+        self.assertIn("RESTABLECIDA", self.notifier.messages[-1])
 
     @patch("telegram_notify.time.time", return_value=1000)
     def test_short_outage_does_not_notify(self, _time):
@@ -81,8 +81,8 @@ class CameraConnectivityTests(unittest.TestCase):
         alerts.check(8500)
 
         self.assertEqual(len(self.notifier.messages), 3)
-        self.assertIn("still offline", self.notifier.messages[1])
-        self.assertIn("still offline", self.notifier.messages[2])
+        self.assertIn("SIGUE SIN CONEXIÓN", self.notifier.messages[1])
+        self.assertIn("SIGUE SIN CONEXIÓN", self.notifier.messages[2])
 
     @patch("telegram_notify.time.time", return_value=1000)
     def test_late_check_sends_only_one_repeat_and_reschedules(self, _time):

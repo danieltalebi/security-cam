@@ -70,8 +70,16 @@ class InternetConnectivityMonitor:
             if self.online is False and self.first_failure_at is not None:
                 duration = now - self.first_failure_at
                 if self.history is None:
-                    message = f"✅ Internet connection restored after {format_duration(duration)} offline."
-                    print(message)
+                    message = (
+                        "✅ INTERNET RESTABLECIDO\n"
+                        f"⏱️ Duración del corte: {format_duration(duration)}"
+                    )
+                    # Keep console output ASCII-safe on Windows terminals that still
+                    # use a legacy code page; Telegram receives the formatted text.
+                    print(
+                        "Internet connection restored after "
+                        f"{format_duration(duration)} offline."
+                    )
                     try:
                         self.notify(message)
                     except Exception as error:

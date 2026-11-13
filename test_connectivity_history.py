@@ -54,12 +54,12 @@ class ConnectivityHistoryTests(unittest.TestCase):
             history.set_router("asus", False, BASE + 1)
             history.tick(BASE + 3600)
             self.assertEqual(
-                [item for item in messages if "sigue caído" in item], [],
+                [item for item in messages if "SIN CONEXIÓN" in item], [],
             )
             history.tick(BASE + 3601)
             history.tick(BASE + 7200)
 
-            router_alerts = [item for item in messages if "sigue caído" in item]
+            router_alerts = [item for item in messages if "SIN CONEXIÓN" in item]
             self.assertEqual(len(router_alerts), 1)
 
     def test_short_internet_outage_is_summary_only(self):
@@ -87,7 +87,7 @@ class ConnectivityHistoryTests(unittest.TestCase):
             restored.set_internet(True, BASE + 12 * 60)
             restored.set_internet(True, BASE + 13 * 60)
 
-            alerts = [item for item in messages if "Internet volvió" in item]
+            alerts = [item for item in messages if "INTERNET RESTABLECIDO" in item]
             self.assertEqual(len(alerts), 1)
             self.assertIn("11m", alerts[0])
             state = json.loads((Path(folder) / "connectivity.json").read_text())
@@ -104,7 +104,7 @@ class ConnectivityHistoryTests(unittest.TestCase):
 
             history.set_internet(True, BASE + 70 * 60)
 
-            self.assertTrue(any("Internet volvió" in item for item in messages))
+            self.assertTrue(any("INTERNET RESTABLECIDO" in item for item in messages))
             summaries = [item for item in messages if "Resumen diario" in item]
             self.assertEqual(len(summaries), 1)
             self.assertIn("Internet: en línea", summaries[0])
@@ -133,6 +133,8 @@ class ConnectivityHistoryTests(unittest.TestCase):
 
             self.assertEqual(len(messages), 1)
             self.assertIn("Resumen diario", messages[0])
+            self.assertIn("🌐 Estado actual", messages[0])
+            self.assertIn("📉 Caídas", messages[0])
             self.assertIn("alarma manual y desarmada", messages[0])
 
 

@@ -308,8 +308,8 @@ class CameraConnectivityAlerts:
                 self._online = False
         if should_report_recovery and recovery_seconds is not None:
             self._send(
-                f"✅ {self.camera_name} camera is back online after "
-                f"{format_duration(recovery_seconds)} offline."
+                f"✅ CÁMARA {self.camera_name.upper()} RESTABLECIDA\n"
+                f"⏱️ Estuvo sin conexión: {format_duration(recovery_seconds)}"
             )
 
     def check(self, now: float | None = None) -> None:
@@ -323,7 +323,8 @@ class CameraConnectivityAlerts:
                 threshold = self.thresholds[self._alerts_sent]
                 self._alerts_sent += 1
                 messages.append(
-                    f"⚠️ {self.camera_name} camera has been offline for {format_duration(threshold)}."
+                    f"⚠️ CÁMARA {self.camera_name.upper()} SIN CONEXIÓN\n"
+                    f"⏱️ Duración: {format_duration(threshold)}"
                 )
                 if self._alerts_sent == len(self.thresholds) and self.repeat_seconds:
                     self._next_repeat_at = now + self.repeat_seconds
@@ -334,8 +335,8 @@ class CameraConnectivityAlerts:
                 and now >= self._next_repeat_at
             ):
                 messages.append(
-                    f"⚠️ Reminder: {self.camera_name} camera is still offline "
-                    f"after {format_duration(elapsed)}."
+                    f"🔁 CÁMARA {self.camera_name.upper()} SIGUE SIN CONEXIÓN\n"
+                    f"⏱️ Duración acumulada: {format_duration(elapsed)}"
                 )
                 missed_intervals = int((now - self._next_repeat_at) // self.repeat_seconds)
                 self._next_repeat_at += (missed_intervals + 1) * self.repeat_seconds

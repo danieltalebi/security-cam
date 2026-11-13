@@ -193,18 +193,25 @@ class PresenceAlarmTests(unittest.TestCase):
                     self.assertIn(expected, channel.send_photo.call_args.args[1])
                     self.assertIn("IGNORAR", channel.send_photo.call_args.args[1])
 
-    def test_daily_alarm_reminder_only_for_manual_disarmed_mode(self):
+    def test_daily_alarm_reminder_reports_control_and_warns_when_disarmed(self):
         policy = MagicMock()
         policy.snapshot.return_value = {"control": "manual", "mode": "disarmed"}
-        self.assertIn("manual y desarmada", daily_alarm_reminder(policy))
+        warning = daily_alarm_reminder(policy)
+        self.assertIn("ADVERTENCIA", warning)
+        self.assertIn("MANUAL", warning)
+        self.assertIn("DESARMADA", warning)
 
-        for state in (
-            {"control": "automatic", "mode": "disarmed"},
-            {"control": "manual", "mode": "armed_home"},
-            {"control": "manual", "mode": "armed_away"},
-        ):
-            policy.snapshot.return_value = state
-            self.assertIsNone(daily_alarm_reminder(policy))
+        policy.snapshot.return_value = {"control": "manual", "mode": "armed_home"}
+        manual_armed = daily_alarm_reminder(policy)
+        self.assertIn("Recordatorio", manual_armed)
+        self.assertIn("Manual", manual_armed)
+        self.assertIn("Armada en casa", manual_armed)
+
+        policy.snapshot.return_value = {"control": "automatic", "mode": "disarmed"}
+        automatic = daily_alarm_reminder(policy)
+        self.assertIn("Estado de la alarma", automatic)
+        self.assertIn("Automático", automatic)
+        self.assertIn("DESARMADA", automatic)
 
 
 if __name__ == "__main__":

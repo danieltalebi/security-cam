@@ -24,6 +24,11 @@ from false_positive_memory import all_detections_match
 
 ALARM_MODES = {"disarmed", "armed_home", "armed_away"}
 CONTROL_MODES = {"automatic", "manual"}
+MODE_LABELS = {
+    "disarmed": "Desarmada",
+    "armed_home": "Armada en casa",
+    "armed_away": "Armada fuera de casa",
+}
 _DURATION_PART = re.compile(r"(\d+(?:\.\d+)?)\s*([smhd])", re.IGNORECASE)
 
 
@@ -508,18 +513,29 @@ class AlarmPolicyController:
         normalized = re.sub(r"^/", "", normalized)
         if normalized in {"help", "ayuda", "commands", "comandos"}:
             return (
-                "Controles: /auto, /manual, /away, /home, /disarm, /status, "
-                "/resume, /until8; cámaras: /photo y /video; "
-                "pausas: 10m, 1h, 1h30m o /pause 2h; "
-                "responda OK para reconocer o IGNORAR para marcar el último "
-                "incidente como falso positivo."
+                "🤖 Comandos de Security Cam\n\n"
+                "🛡️ Alarma\n"
+                "/auto · /manual · /away · /home · /disarm · /status\n\n"
+                "📷 Cámaras\n"
+                "/photo · /video\n\n"
+                "🔕 Notificaciones\n"
+                "10m · 1h · 1h30m · /pause 2h · /until8 · /resume\n\n"
+                "✅ OK reconoce un incidente\n"
+                "🚫 IGNORAR lo marca como falso positivo temporal"
             )
         if normalized in {"auto", "automatico", "automático"}:
             mode = self.set_automatic()
-            return f"Control automático activado. Modo: {mode}."
+            return (
+                "✅ CONTROL AUTOMÁTICO ACTIVADO\n"
+                f"🛡️ Alarma: {MODE_LABELS.get(mode, mode)}"
+            )
         if normalized == "manual":
             mode = self.set_manual()
-            return f"Control manual activado. Modo: {mode}."
+            return (
+                "⚠️ CONTROL MANUAL ACTIVADO\n"
+                f"🛡️ Alarma: {MODE_LABELS.get(mode, mode)}\n"
+                "ℹ️ Enviá /auto para volver al control por presencia y horario."
+            )
         manual_modes = {
             "away": "armed_away", "fuera": "armed_away",
             "home": "armed_home", "casa": "armed_home",
@@ -527,17 +543,31 @@ class AlarmPolicyController:
         }
         if normalized in manual_modes:
             mode = self.set_manual(manual_modes[normalized])
-            return f"Control manual. Modo: {mode}."
+            icon = "🔓" if mode == "disarmed" else "🔒"
+            warning = (
+                "\n🚨 La alarma permanecerá desarmada hasta /auto o un armado manual."
+                if mode == "disarmed" else ""
+            )
+            return (
+                "⚠️ CONTROL MANUAL\n"
+                f"{icon} Alarma: {MODE_LABELS.get(mode, mode)}{warning}"
+            )
         if normalized in {"resume", "unmute", "reanudar"}:
             self.resume_notifications()
-            return "Notificaciones reanudadas."
+            return "🔔 NOTIFICACIONES REANUDADAS\n✅ Las alertas vuelven a estar activas."
         if normalized in {"until8", "hasta8"}:
             seconds = self.pause_until_8()
-            return f"Notificaciones pausadas hasta las 08:00 ({_format_duration(seconds)})."
+            return (
+                "🔕 NOTIFICACIONES PAUSADAS\n"
+                f"🌅 Hasta las 08:00 ({_format_duration(seconds)})"
+            )
         if normalized.startswith("ok"):
             target = normalized[2:].strip() or None
             count = self.acknowledge(target)
-            return f"{count} incidente(s) reconocido(s)." if count else "No hay incidentes activos para reconocer."
+            return (
+                f"✅ {count} incidente(s) reconocido(s)."
+                if count else "ℹ️ No hay incidentes activos para reconocer."
+            )
         false_positive_prefixes = ("ignore", "ignorar", "falsepositive", "falso positivo")
         for prefix in false_positive_prefixes:
             if normalized == prefix or normalized.startswith(prefix + " "):
@@ -546,23 +576,20 @@ class AlarmPolicyController:
                 if feedback:
                     if not feedback.get("detections"):
                         return (
-                            f"Incidente de {feedback['camera']} marcado como falso positivo y "
-                            "evidencia conservada. Era anterior a la memoria visual; las próximas "
-                            "alertas sí guardarán coordenadas para comparar."
+                            "🚫 FALSO POSITIVO REGISTRADO\n"
+                            f"📷 Cámara: {feedback['camera']}\n"
+                            "💾 Evidencia conservada. Este incidente era anterior a la memoria "
+                            "visual; las próximas alertas sí guardarán coordenadas para comparar."
                         )
                     return (
-                        f"Incidente de {feedback['camera']} marcado como falso positivo. "
-                        f"Durante {_format_duration(self.false_positive_ttl)} ignoraré "
-                        "sólo coincidencias visuales en esa misma zona; conservé la evidencia."
+                        "🚫 FALSO POSITIVO REGISTRADO\n"
+                        f"📷 Cámara: {feedback['camera']}\n"
+                        f"⏱️ Memoria temporal: {_format_duration(self.false_positive_ttl)}\n"
+                        "🎯 Sólo se ignorarán coincidencias visuales en esa misma zona."
                     )
-                return "No encontré un incidente reciente para marcar como falso positivo."
+                return "ℹ️ No encontré un incidente reciente para marcar como falso positivo."
         if normalized == "status":
             state = self.snapshot()
-            mode_labels = {
-                "disarmed": "desarmada",
-                "armed_home": "armada en casa",
-                "armed_away": "armada fuera de casa",
-            }
             control_labels = {"automatic": "automático", "manual": "manual"}
             pause = (
                 f"pausadas por {_format_duration(state['notifications_pause_remaining'])}"
@@ -581,16 +608,26 @@ class AlarmPolicyController:
             incident_text = ", ".join(
                 f"{item['camera']}{' (OK)' if item.get('acknowledged') else ''}" for item in incidents
             ) or "ninguno"
+            mode_icon = "🔓" if state["mode"] == "disarmed" else "🔒"
+            control_icon = "✅" if state["control"] == "automatic" else "⚠️"
             return (
-                f"Modo de alarma: {mode_labels.get(state['mode'], state['mode'])}. "
-                f"Control: {control_labels.get(state['control'], state['control'])}. "
-                f"Presencia: {devices}. Routers: {routers}. "
-                f"Notificaciones {pause}. Incidentes: {incident_text}."
+                "🛡️ Estado de Security Cam\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                f"{mode_icon} Alarma: {MODE_LABELS.get(state['mode'], state['mode'])}\n"
+                f"{control_icon} Control: {control_labels.get(state['control'], state['control'])}\n"
+                f"🏠 Presencia: {devices}\n"
+                f"📡 Routers: {routers}\n"
+                f"🔔 Notificaciones: {pause}\n"
+                f"🚨 Incidentes: {incident_text}"
             )
         seconds = _duration(normalized)
         if seconds is not None:
             if seconds > 30 * 86400:
-                return "La pausa máxima es 30d."
+                return "⚠️ La pausa máxima es 30d."
             self.pause_for(seconds)
-            return f"Notificaciones pausadas por {_format_duration(seconds)}."
+            return (
+                "🔕 NOTIFICACIONES PAUSADAS\n"
+                f"⏱️ Duración: {_format_duration(seconds)}\n"
+                "🔔 Enviá /resume para reanudarlas antes."
+            )
         return None

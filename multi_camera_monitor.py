@@ -326,22 +326,49 @@ def send_incident_notification(channel: TelegramNotifier, incident: dict) -> boo
         else:
             description = f"🚨 {camera} · {classification}"
         caption = (
-            f"{description} · incidente {incident['id'][:8]}. "
-            "Responda OK para reconocer o IGNORAR si es un falso positivo."
+            f"{description}\n"
+            f"🆔 Incidente: {incident['id'][:8]}\n"
+            "✅ Respondé OK para reconocer\n"
+            "🚫 Respondé IGNORAR si es un falso positivo"
         )
         return channel.send_photo(Path(str(evidence_path)).read_bytes(), caption)
     return channel.send_notification_message(
-        "🚨 ALARMA FUERA · Presencia detectada por el sensor interior. "
-        f"Incidente {incident['id'][:8]}. Responda OK para reconocer."
+        "🚨 ALARMA · PRESENCIA INTERIOR\n"
+        "🏠 El sensor interior detectó presencia con la alarma armada fuera.\n"
+        f"🆔 Incidente: {incident['id'][:8]}\n"
+        "✅ Respondé OK para reconocer"
     )
 
 
 def daily_alarm_reminder(policy) -> str | None:
-    """Return the reminder appended to the daily summary when action is needed."""
+    """Return the formatted alarm section appended to every daily summary."""
     state = policy.snapshot()
-    if state.get("control") == "manual" and state.get("mode") == "disarmed":
-        return "⚠️ Recordatorio: la alarma sigue en control manual y desarmada."
-    return None
+    mode = state.get("mode")
+    mode_labels = {
+        "disarmed": "DESARMADA",
+        "armed_home": "Armada en casa",
+        "armed_away": "Armada fuera de casa",
+    }
+    mode_icon = "🔓" if mode == "disarmed" else "🔒"
+    if state.get("control") == "manual" and mode == "disarmed":
+        return (
+            "🚨 ADVERTENCIA DE ALARMA\n"
+            "⚠️ Control: MANUAL\n"
+            f"{mode_icon} Estado: {mode_labels.get(mode, mode)}\n"
+            "❗ Permanecerá desarmada hasta que envíes /auto o la armes manualmente."
+        )
+    if state.get("control") == "manual":
+        return (
+            "⚠️ Recordatorio de alarma\n"
+            "🎛️ Control: Manual\n"
+            f"{mode_icon} Estado: {mode_labels.get(mode, mode)}\n"
+            "ℹ️ Permanecerá en este modo hasta que envíes /auto."
+        )
+    return (
+        "🛡️ Estado de la alarma\n"
+        "✅ Control: Automático\n"
+        f"{mode_icon} Estado: {mode_labels.get(mode, mode)}"
+    )
 
 
 def main() -> None:

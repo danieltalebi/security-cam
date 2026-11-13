@@ -178,9 +178,9 @@ class ConnectivityHistory:
                         self._queue_notification(
                             f"internet-recovery:{recovered['id']}",
                             (
-                                "✅ Internet volvió. El corte iniciado a las "
-                                f"{self._timestamp(float(recovered['started_at']))} duró "
-                                f"{format_duration(duration)}."
+                                "✅ INTERNET RESTABLECIDO\n"
+                                f"🕐 Inicio: {self._timestamp(float(recovered['started_at']))}\n"
+                                f"⏱️ Duración total: {format_duration(duration)}"
                             ),
                             recovered["id"], "recovery_alert_sent",
                         )
@@ -243,9 +243,9 @@ class ConnectivityHistory:
                     self._queue_notification(
                         f"router-hour:{incident['id']}",
                         (
-                            f"⚠️ Router {incident['name']} sigue caído desde "
-                            f"{self._timestamp(float(incident['started_at']))} "
-                            f"({format_duration(duration)})."
+                            f"⚠️ ROUTER {str(incident['name']).upper()} SIN CONEXIÓN\n"
+                            f"🕐 Inicio: {self._timestamp(float(incident['started_at']))}\n"
+                            f"⏱️ Duración: {format_duration(duration)}"
                         ),
                         incident["id"], "router_alert_sent",
                     )
@@ -296,13 +296,13 @@ class ConnectivityHistory:
         for item in connections:
             online = item.get("online")
             if online is True:
-                status = "en línea"
+                marker, status = "✅", "en línea"
             elif online is False:
                 duration = now - float(item.get("offline_since") or now)
-                status = f"CAÍDA abierta ({format_duration(duration)})"
+                marker, status = "🔴", f"CAÍDA abierta ({format_duration(duration)})"
             else:
-                status = "sin datos"
-            status_lines.append(f"• {item['name']}: {status}")
+                marker, status = "❔", "sin datos"
+            status_lines.append(f"{marker} {item['name']}: {status}")
 
         incident_lines = []
         for incident in self.state["incidents"]:
@@ -314,16 +314,18 @@ class ConnectivityHistory:
             ):
                 continue
             end = now if ended is None else float(ended)
-            suffix = " · abierta" if ended is None else ""
+            marker = "🔴" if ended is None else "🟠"
+            suffix = " · ABIERTA" if ended is None else " · recuperada"
             incident_lines.append(
-                f"• {incident['name']}: {self._timestamp(float(incident['started_at']))}, "
+                f"{marker} {incident['name']}: {self._timestamp(float(incident['started_at']))}, "
                 f"{format_duration(end - float(incident['started_at']))}{suffix}"
             )
-        incidents = "\n".join(incident_lines) or "• Sin caídas desde el resumen anterior."
+        incidents = "\n".join(incident_lines) or "✅ Sin caídas desde el resumen anterior."
         message = (
-            "📡 Resumen diario de conectividad\n"
-            "Estado actual:\n" + "\n".join(status_lines) +
-            "\nCaídas desde el resumen anterior:\n" + incidents
+            f"📡 Resumen diario · {self.summary_clock.strftime('%H:%M')}\n"
+            "━━━━━━━━━━━━━━━━━━\n"
+            "🌐 Estado actual\n" + "\n".join(status_lines) +
+            "\n\n📉 Caídas desde el resumen anterior\n" + incidents
         )
         if self.summary_context is not None:
             try:
