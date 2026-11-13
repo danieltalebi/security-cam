@@ -210,8 +210,10 @@ The local controller:
 - never notifies for a garage result confirmed as `public`;
 - groups qualifying detections from each camera into one incident that closes after 60 seconds without another detection;
 - repeats armed incident alerts with progressive backoff until that incident is acknowledged;
-- accepts `IGNORAR` (or `/ignore garage`, `/ignore backyard`) to dismiss one
-  incident as a false positive and retain its evidence as training feedback;
+- accepts `IGNORAR` (or `/ignore garage`, `/ignore backyard`) to retain an
+  incident as false-positive feedback; for four hours, only detections with a
+  lighting-tolerant visual match in the same coordinates are suppressed, while
+  an additional person or a detection elsewhere still alerts;
 - alerts for sources marked `role: interior` only in `armed_away`;
 - provides duration, until-08:00, and resume controls;
 - keeps detection and local evidence capture running while notifications are paused.

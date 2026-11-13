@@ -256,6 +256,46 @@ class AlarmPolicyTests(unittest.TestCase):
         self.assertIn("backyard", response)
         self.assertTrue(policy.snapshot()["incidents"]["backyard"]["false_positive"])
 
+    def test_false_positive_memory_suppresses_same_object_only_until_expiry(self):
+        clock = Clock(self.local_epoch(12))
+        policy = self.controller(
+            clock, incidents={
+                "close_after_seconds": 60,
+                "false_positive_suppression_seconds": 120,
+            },
+        )
+        policy.set_manual("armed_away", clock.value)
+        same_object = [{"box": [0.1, 0.1, 0.3, 0.5], "phash": "0123456789abcdef"}]
+        other_area = [{"box": [0.65, 0.1, 0.85, 0.5], "phash": "0123456789abcdef"}]
+        occurred = datetime.fromtimestamp(clock.value).astimezone()
+        policy.record_detection(
+            "backyard", "exterior", "presence", "shadow.jpg", occurred,
+            detections=same_object,
+        )
+        policy.mark_false_positive("backyard", clock.value)
+
+        clock.value += 61
+        policy.tick(clock.value)
+        self.assertIsNone(policy.record_detection(
+            "backyard", "exterior", "presence", "same-shadow.jpg",
+            datetime.fromtimestamp(clock.value).astimezone(), detections=same_object,
+        ))
+        different = policy.record_detection(
+            "backyard", "exterior", "presence", "person-elsewhere.jpg",
+            datetime.fromtimestamp(clock.value + 1).astimezone(), detections=other_area,
+        )
+        self.assertIsNotNone(different)
+
+        clock.value += 61
+        policy.tick(clock.value)
+        after_expiry = policy.record_detection(
+            "backyard", "exterior", "presence", "shadow-later.jpg",
+            datetime.fromtimestamp(clock.value).astimezone(), detections=same_object,
+        )
+        self.assertIsNotNone(after_expiry)
+        feedback = policy.snapshot()["false_positives"][0]
+        self.assertEqual(feedback["suppressed_count"], 1)
+
     def test_pause_and_operator_controls_survive_restart(self):
         clock = Clock(self.local_epoch(12))
         policy = self.controller(clock)

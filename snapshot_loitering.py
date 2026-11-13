@@ -19,6 +19,7 @@ class PersonObservation:
     foot: Point
     height: float
     confidence: float
+    appearance_hash: str | None = None
 
 
 @dataclass

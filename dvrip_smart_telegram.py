@@ -19,6 +19,7 @@ from ultralytics import YOLO
 from dvrip_events import DVRIPAlarmListener
 from onvif_snapshot import download_snapshot, xmeye_snapshot_uri
 from snapshot_loitering import PersonObservation, SnapshotDwellTracker
+from false_positive_memory import appearance_hash
 from telegram_notify import CameraConnectivityAlerts, TelegramNotifier
 from timestamp_logging import install_timestamped_logging
 from camera_config import credentials, dvrip_endpoint, required_env, rtsp_url
@@ -107,14 +108,24 @@ class SmartAlarm:
         fixed, ptz = tuple(self.layout["fixed"]), tuple(self.layout["ptz"])
         fixed_people: list[PersonObservation] = []
         ptz_people: list[PersonObservation] = []
+        source_frame = frame.copy()
         for x1, y1, x2, y2, confidence, _class_id in result.boxes.data.tolist():
             box = tuple(map(int, (x1, y1, x2, y2)))
+            visual_hash = appearance_hash(source_frame, box)
             foot = ((box[0] + box[2]) / 2, box[3])
             observation = PersonObservation(
                 box, foot, max(1, box[3] - box[1]), float(confidence),
             )
             if fixed[0] <= foot[0] <= fixed[2] and fixed[1] <= foot[1] <= fixed[3]:
-                fixed_people.append(observation)
+                local_box = (
+                    box[0] - fixed[0], box[1] - fixed[1],
+                    box[2] - fixed[0], box[3] - fixed[1],
+                )
+                fixed_people.append(PersonObservation(
+                    local_box,
+                    (foot[0] - fixed[0], foot[1] - fixed[1]),
+                    observation.height, observation.confidence, visual_hash,
+                ))
                 label, color = "fixed immediate", (0, 0, 255)
             elif ptz[0] <= foot[0] <= ptz[2] and ptz[1] <= foot[1] <= ptz[3]:
                 local_box = (
@@ -124,6 +135,7 @@ class SmartAlarm:
                 local_foot = (foot[0] - ptz[0], foot[1] - ptz[1])
                 ptz_people.append(PersonObservation(
                     local_box, local_foot, observation.height, observation.confidence,
+                    visual_hash,
                 ))
                 label, color = "ptz tracking", (0, 255, 255)
             else:
@@ -185,12 +197,29 @@ class SmartAlarm:
 
     def register_local_detection(
         self, decision: str, evidence_path: str, occurred_at: datetime,
+        detections: list[dict] | None = None,
     ) -> None:
         policy = getattr(self, "policy", None)
         if policy is not None:
             policy.record_detection(
                 self.name, self.role, decision, evidence_path, occurred_at,
+                detections=detections,
             )
+
+    @staticmethod
+    def _detection_metadata(
+        observations: list[PersonObservation], width: int, height: int,
+    ) -> list[dict]:
+        def normalized(value: int, extent: int) -> float:
+            return round(min(1.0, max(0.0, value / extent)), 6)
+
+        return [{
+            "box": [
+                normalized(item.box[0], width), normalized(item.box[1], height),
+                normalized(item.box[2], width), normalized(item.box[3], height),
+            ],
+            "phash": item.appearance_hash,
+        } for item in observations if item.appearance_hash]
 
     def fetch_snapshot(self) -> np.ndarray:
         uri = xmeye_snapshot_uri(self.snapshot_url, self.username, self.password) if self.snapshot_query_auth else self.snapshot_url
@@ -297,7 +326,12 @@ class SmartAlarm:
                         self.publish_detection(
                             evidence, source, "private", len(fixed_people), occurred_at,
                         )
-                        self.register_local_detection("private", evidence_path, occurred_at)
+                        fixed_width = int(self.layout["fixed"][2]) - int(self.layout["fixed"][0])
+                        fixed_height = int(self.layout["fixed"][3]) - int(self.layout["fixed"][1])
+                        self.register_local_detection(
+                            "private", evidence_path, occurred_at,
+                            self._detection_metadata(fixed_people, fixed_width, fixed_height),
+                        )
                         if getattr(self, "policy", None) is None:
                             self.notify_alert(
                                 evidence, source, "private", len(fixed_people),
@@ -343,7 +377,12 @@ class SmartAlarm:
                         # Keep the Home Assistant classification compatible,
                         # but identify the local policy event as a doorbell-like
                         # visitor which must also alert while disarmed.
-                        self.register_local_detection("visitor", evidence_path, occurred_at)
+                        ptz_width = int(self.layout["ptz"][2]) - int(self.layout["ptz"][0])
+                        ptz_height = int(self.layout["ptz"][3]) - int(self.layout["ptz"][1])
+                        self.register_local_detection(
+                            "visitor", evidence_path, occurred_at,
+                            self._detection_metadata(ptz_people, ptz_width, ptz_height),
+                        )
                         if getattr(self, "policy", None) is None:
                             self.notify_alert(
                                 evidence, source, "tracked presence", len(ptz_people),

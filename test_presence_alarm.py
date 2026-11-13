@@ -64,6 +64,23 @@ class PresenceAlarmTests(unittest.TestCase):
         alarm.publish_verification_failure.assert_not_called()
         alarm._video_frames.assert_not_called()
 
+    def test_backyard_analysis_records_normalized_box_and_visual_hash(self):
+        alarm = self.bare_alarm()
+        frame = np.zeros((100, 200, 3), dtype=np.uint8)
+        frame[20:80, 40:100] = 180
+        result = MagicMock()
+        result.boxes.data.tolist.return_value = [[40, 20, 100, 80, 0.9, 0]]
+        result.plot.return_value = frame.copy()
+        alarm.model = MagicMock()
+        alarm.model.predict.return_value = [result]
+        alarm.confidence = 0.5
+
+        _annotated, count, detections = alarm.analyze(frame)
+
+        self.assertEqual(count, 1)
+        self.assertEqual(detections[0]["box"], [0.2, 0.2, 0.5, 0.8])
+        self.assertEqual(len(detections[0]["phash"]), 16)
+
     def test_no_snapshot_or_rtsp_publishes_technical_failure(self):
         alarm = self.bare_alarm()
         alarm.fetch_snapshot = MagicMock(side_effect=TimeoutError("camera-password unavailable"))

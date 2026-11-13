@@ -64,7 +64,9 @@ class GarageSnapshotAlarmTests(unittest.TestCase):
     def test_fixed_lens_person_alerts_immediately_with_fixed_crop(self):
         alarm = self.alarm()
         frame = np.zeros((100, 100, 3), dtype=np.uint8)
-        fixed = PersonObservation((10, 5, 30, 45), (20, 45), 40, 0.9)
+        fixed = PersonObservation(
+            (10, 5, 30, 45), (20, 45), 40, 0.9, "0123456789abcdef",
+        )
         alarm.fetch_snapshot = MagicMock(return_value=frame)
         alarm.detect_people = MagicMock(return_value=(frame, [fixed], []))
 
@@ -75,12 +77,17 @@ class GarageSnapshotAlarmTests(unittest.TestCase):
         self.assertIn("fixed garage lens", published[1])
         self.assertEqual(published[2], "private")
         alarm.register_local_detection.assert_called_once()
+        fixed_metadata = alarm.register_local_detection.call_args.args[3]
+        self.assertEqual(fixed_metadata[0]["box"], [0.1, 0.1, 0.3, 0.9])
+        self.assertEqual(len(fixed_metadata[0]["phash"]), 16)
         alarm.notify_alert.assert_not_called()
 
     def test_ptz_tracking_alert_uses_ptz_crop_and_presence_decision(self):
         alarm = self.alarm()
         frame = np.zeros((100, 100, 3), dtype=np.uint8)
-        ptz = PersonObservation((10, 5, 30, 45), (20, 45), 40, 0.9)
+        ptz = PersonObservation(
+            (10, 5, 30, 45), (20, 45), 40, 0.9, "0123456789abcdef",
+        )
         alarm.fetch_snapshot = MagicMock(return_value=frame)
         alarm.detect_people = MagicMock(return_value=(frame, [], [ptz]))
         track = DwellTrack(1, 0, 4)
@@ -99,6 +106,9 @@ class GarageSnapshotAlarmTests(unittest.TestCase):
         self.assertEqual(published[2], "presence")
         alarm.register_local_detection.assert_called_once()
         self.assertEqual(alarm.register_local_detection.call_args.args[0], "visitor")
+        ptz_metadata = alarm.register_local_detection.call_args.args[3]
+        self.assertEqual(ptz_metadata[0]["box"], [0.1, 0.1, 0.3, 0.9])
+        self.assertEqual(len(ptz_metadata[0]["phash"]), 16)
 
 
 if __name__ == "__main__":

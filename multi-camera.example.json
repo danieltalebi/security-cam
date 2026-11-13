@@ -37,6 +37,8 @@
     },
     "incidents": {
       "close_after_seconds": 60,
+      "false_positive_suppression_seconds": 14400,
+      "false_positive_hash_distance": 10,
       "notification_backoff_seconds": [0, 60, 180, 300, 600]
     }
   },

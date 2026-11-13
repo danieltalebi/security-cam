@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Callable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from false_positive_memory import all_detections_match
+
 
 ALARM_MODES = {"disarmed", "armed_home", "armed_away"}
 CONTROL_MODES = {"automatic", "manual"}
@@ -92,6 +94,12 @@ class AlarmPolicyController:
             self.timezone = datetime.now().astimezone().tzinfo
         self.away_debounce = max(0.0, float(automatic.get("away_debounce_seconds", 300)))
         self.incident_close = max(1.0, float(incidents.get("close_after_seconds", 60)))
+        self.false_positive_ttl = max(
+            60.0, float(incidents.get("false_positive_suppression_seconds", 4 * 3600)),
+        )
+        self.false_positive_hash_distance = max(
+            0, int(incidents.get("false_positive_hash_distance", 10)),
+        )
         backoff = incidents.get("notification_backoff_seconds", [0, 60, 180, 300, 600])
         self.notification_backoff = tuple(max(0.0, float(value)) for value in backoff) or (0.0,)
         configured_path = state_file or config.get("state_file", ".security-cam-state.json")
@@ -299,11 +307,24 @@ class AlarmPolicyController:
         classification: str,
         evidence_path: str | Path | None,
         occurred_at: datetime | None = None,
+        detections: list[dict] | None = None,
     ) -> dict | None:
         now = (occurred_at or datetime.now().astimezone()).timestamp()
         with self._lock:
             self._reload_if_changed()
             if not self.camera_may_alert(role, classification):
+                return None
+            feedback = self._matching_false_positive(
+                camera, classification, detections or [], now,
+            )
+            if feedback is not None:
+                feedback["suppressed_count"] = int(feedback.get("suppressed_count", 0)) + 1
+                feedback["last_suppressed_at"] = now
+                self._save(now)
+                print(
+                    f"{camera}: detection suppressed by temporary false-positive memory "
+                    f"{str(feedback.get('incident_id', ''))[:8]}"
+                )
                 return None
             incidents = self._state["incidents"]
             incident = incidents.get(camera)
@@ -320,6 +341,7 @@ class AlarmPolicyController:
                     "notification_count": 0,
                     "next_notification_at": now,
                     "evidence_path": str(evidence_path) if evidence_path else None,
+                    "detections": deepcopy(detections or []),
                 }
                 incidents[camera] = incident
             else:
@@ -328,8 +350,34 @@ class AlarmPolicyController:
                 incident["role"] = role
                 if evidence_path:
                     incident["evidence_path"] = str(evidence_path)
+                if detections:
+                    incident["detections"] = deepcopy(detections)
             self._save(now)
             return deepcopy(incident)
+
+    def _matching_false_positive(
+        self,
+        camera: str,
+        classification: str,
+        detections: list[dict],
+        now: float,
+    ) -> dict | None:
+        for feedback in reversed(self._state["false_positives"]):
+            if feedback.get("camera") != camera:
+                continue
+            if feedback.get("classification") != classification:
+                continue
+            if float(feedback.get("expires_at", 0)) <= now:
+                continue
+            exemplars = feedback.get("detections")
+            if not isinstance(exemplars, list):
+                continue
+            if all_detections_match(
+                detections, exemplars,
+                max_hash_distance=self.false_positive_hash_distance,
+            ):
+                return feedback
+        return None
 
     def due_notifications(self, now: float | None = None) -> list[dict]:
         now = self._now() if now is None else now
@@ -405,9 +453,19 @@ class AlarmPolicyController:
                 "evidence_path": incident.get("evidence_path"),
                 "opened_at": incident.get("opened_at"),
                 "marked_at": now,
+                "expires_at": now + self.false_positive_ttl,
+                "detections": deepcopy(incident.get("detections", [])),
+                "suppressed_count": 0,
             }
             stored = self._state["false_positives"]
-            if not any(item.get("incident_id") == feedback["incident_id"] for item in stored):
+            existing = next((
+                item for item in stored
+                if item.get("incident_id") == feedback["incident_id"]
+            ), None)
+            if existing is not None:
+                existing.update(feedback)
+                feedback = existing
+            else:
                 stored.append(feedback)
                 del stored[:-500]
             self._save(now)
@@ -486,9 +544,16 @@ class AlarmPolicyController:
                 target = normalized[len(prefix):].strip() or None
                 feedback = self.mark_false_positive(target)
                 if feedback:
+                    if not feedback.get("detections"):
+                        return (
+                            f"Incidente de {feedback['camera']} marcado como falso positivo y "
+                            "evidencia conservada. Era anterior a la memoria visual; las próximas "
+                            "alertas sí guardarán coordenadas para comparar."
+                        )
                     return (
                         f"Incidente de {feedback['camera']} marcado como falso positivo. "
-                        "No volverá a alertar por este incidente y conservé la evidencia."
+                        f"Durante {_format_duration(self.false_positive_ttl)} ignoraré "
+                        "sólo coincidencias visuales en esa misma zona; conservé la evidencia."
                     )
                 return "No encontré un incidente reciente para marcar como falso positivo."
         if normalized == "status":

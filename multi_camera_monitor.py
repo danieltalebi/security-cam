@@ -23,6 +23,7 @@ from telegram_notify import CameraConnectivityAlerts, TelegramNotifier
 from timestamp_logging import install_timestamped_logging
 from single_instance import SingleInstanceLock
 from camera_config import camera_name, credentials, dvrip_endpoint, expand_host, required_env, rtsp_url
+from false_positive_memory import detection_metadata
 
 if TYPE_CHECKING:
     from alarm_policy import AlarmPolicyController
@@ -89,11 +90,15 @@ class PresenceAlarm:
             raise RuntimeError("Could not encode verification JPEG.")
         return encoded.tobytes()
 
-    def analyze(self, frame: np.ndarray) -> tuple[np.ndarray, int]:
+    def analyze(self, frame: np.ndarray) -> tuple[np.ndarray, int, list[dict]]:
         result = self.model.predict(
             frame, classes=[0], conf=self.confidence, verbose=False,
         )[0]
-        return result.plot(), len(result.boxes)
+        boxes = [
+            tuple(map(int, row[:4]))
+            for row in result.boxes.data.tolist()
+        ]
+        return result.plot(), len(boxes), detection_metadata(frame, boxes)
 
     def save_result(
         self, frame: np.ndarray, outcome: str, source: str,
@@ -137,6 +142,7 @@ class PresenceAlarm:
     def publish_confirmed(
         self, frame: np.ndarray, source: str, count: int, occurred_at: datetime,
         evidence_path: str | Path | None = None,
+        detections: list[dict] | None = None,
     ) -> None:
         data = self.jpeg(frame)
         mqtt_published = False
@@ -150,9 +156,10 @@ class PresenceAlarm:
                 print(f"{self.name}: Home Assistant MQTT publish failed: {type(error).__name__}: {error}")
         policy = getattr(self, "policy", None)
         if policy is not None:
+            arguments = {"detections": detections} if detections else {}
             policy.record_detection(
                 self.name, getattr(self, "role", "exterior"), "presence",
-                evidence_path, occurred_at,
+                evidence_path, occurred_at, **arguments,
             )
             print(f"{self.name}: person confirmed via {source}" + (" and published" if mqtt_published else ""))
             return
@@ -197,10 +204,14 @@ class PresenceAlarm:
             try:
                 frame = self.fetch_snapshot()
                 evidence_seen = True
-                annotated, count = self.analyze(frame)
+                analysis = self.analyze(frame)
+                annotated, count = analysis[:2]
+                detections = analysis[2] if len(analysis) > 2 else []
                 if count:
                     evidence_path = self.save_result(annotated, "confirmed", "image", count, occurred_at)
-                    self.publish_confirmed(annotated, "image", count, occurred_at, evidence_path)
+                    self.publish_confirmed(
+                        annotated, "image", count, occurred_at, evidence_path, detections,
+                    )
                     return
                 self.save_result(annotated, "rejected", "image", 0, occurred_at)
             except Exception as error:
@@ -209,10 +220,14 @@ class PresenceAlarm:
             try:
                 for frame in self._video_frames() or ():
                     evidence_seen = True
-                    annotated, count = self.analyze(frame)
+                    analysis = self.analyze(frame)
+                    annotated, count = analysis[:2]
+                    detections = analysis[2] if len(analysis) > 2 else []
                     if count:
                         evidence_path = self.save_result(annotated, "confirmed", "video", count, occurred_at)
-                        self.publish_confirmed(annotated, "video", count, occurred_at, evidence_path)
+                        self.publish_confirmed(
+                            annotated, "video", count, occurred_at, evidence_path, detections,
+                        )
                         return
                 if not self.stream:
                     errors.append("RTSP fallback is not configured")
