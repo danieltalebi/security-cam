@@ -174,6 +174,7 @@ class PresenceAlarmTests(unittest.TestCase):
                     })
                     self.assertTrue(sent)
                     self.assertIn(expected, channel.send_photo.call_args.args[1])
+                    self.assertIn("IGNORAR", channel.send_photo.call_args.args[1])
 
     def test_daily_alarm_reminder_only_for_manual_disarmed_mode(self):
         policy = MagicMock()

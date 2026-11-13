@@ -312,7 +312,7 @@ def send_incident_notification(channel: TelegramNotifier, incident: dict) -> boo
             description = f"🚨 {camera} · {classification}"
         caption = (
             f"{description} · incidente {incident['id'][:8]}. "
-            "Responda OK para reconocer."
+            "Responda OK para reconocer o IGNORAR si es un falso positivo."
         )
         return channel.send_photo(Path(str(evidence_path)).read_bytes(), caption)
     return channel.send_notification_message(

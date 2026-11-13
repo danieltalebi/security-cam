@@ -114,6 +114,7 @@ class AlarmPolicyController:
             "away_since": None,
             "notifications_paused_until": 0.0,
             "incidents": {},
+            "false_positives": [],
             "updated_at": None,
         }
 
@@ -135,6 +136,8 @@ class AlarmPolicyController:
             state["router_sources"] = {}
         if not isinstance(state["incidents"], dict):
             state["incidents"] = {}
+        if not isinstance(state["false_positives"], list):
+            state["false_positives"] = []
         try:
             state["notifications_paused_until"] = float(state["notifications_paused_until"] or 0)
         except (TypeError, ValueError):
@@ -370,6 +373,46 @@ class AlarmPolicyController:
                 self._save(now)
             return count
 
+    def mark_false_positive(
+        self, camera: str | None = None, now: float | None = None,
+    ) -> dict | None:
+        """Dismiss the latest matching incident and retain its evidence as feedback."""
+        now = self._now() if now is None else now
+        with self._lock:
+            self._reload_if_changed()
+            candidates = [
+                incident for name, incident in self._state["incidents"].items()
+                if camera is None or name.lower() == camera.lower()
+            ]
+            if not candidates:
+                return None
+            incident = max(
+                candidates,
+                key=lambda item: float(item.get("last_activity", item.get("opened_at", 0))),
+            )
+            # Without an explicit camera, avoid accidentally labeling stale
+            # evidence if IGNORAR is sent long after an alert.
+            latest = float(incident.get("last_activity", incident.get("opened_at", 0)))
+            if camera is None and now - latest > 24 * 3600:
+                return None
+            incident["acknowledged"] = True
+            incident["false_positive"] = True
+            incident["false_positive_at"] = now
+            feedback = {
+                "incident_id": incident.get("id"),
+                "camera": incident.get("camera"),
+                "classification": incident.get("classification"),
+                "evidence_path": incident.get("evidence_path"),
+                "opened_at": incident.get("opened_at"),
+                "marked_at": now,
+            }
+            stored = self._state["false_positives"]
+            if not any(item.get("incident_id") == feedback["incident_id"] for item in stored):
+                stored.append(feedback)
+                del stored[:-500]
+            self._save(now)
+            return deepcopy(feedback)
+
     def tick(self, now: float | None = None) -> bool:
         """Apply time-based transitions and close inactive incidents."""
         now = self._now() if now is None else now
@@ -410,7 +453,8 @@ class AlarmPolicyController:
                 "Controles: /auto, /manual, /away, /home, /disarm, /status, "
                 "/resume, /until8; cámaras: /photo y /video; "
                 "pausas: 10m, 1h, 1h30m o /pause 2h; "
-                "responda OK para reconocer el incidente activo."
+                "responda OK para reconocer o IGNORAR para marcar el último "
+                "incidente como falso positivo."
             )
         if normalized in {"auto", "automatico", "automático"}:
             mode = self.set_automatic()
@@ -436,6 +480,17 @@ class AlarmPolicyController:
             target = normalized[2:].strip() or None
             count = self.acknowledge(target)
             return f"{count} incidente(s) reconocido(s)." if count else "No hay incidentes activos para reconocer."
+        false_positive_prefixes = ("ignore", "ignorar", "falsepositive", "falso positivo")
+        for prefix in false_positive_prefixes:
+            if normalized == prefix or normalized.startswith(prefix + " "):
+                target = normalized[len(prefix):].strip() or None
+                feedback = self.mark_false_positive(target)
+                if feedback:
+                    return (
+                        f"Incidente de {feedback['camera']} marcado como falso positivo. "
+                        "No volverá a alertar por este incidente y conservé la evidencia."
+                    )
+                return "No encontré un incidente reciente para marcar como falso positivo."
         if normalized == "status":
             state = self.snapshot()
             mode_labels = {

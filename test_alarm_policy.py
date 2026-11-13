@@ -215,6 +215,47 @@ class AlarmPolicyTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertEqual(policy.snapshot()["active_incidents"], [])
 
+    def test_ignore_marks_latest_incident_as_persistent_false_positive(self):
+        clock = Clock(self.local_epoch(12))
+        policy = self.controller(clock)
+        policy.set_manual("armed_away", clock.value)
+        policy.record_detection(
+            "garage", "exterior", "private", "shadow.jpg",
+            datetime.fromtimestamp(clock.value).astimezone(),
+        )
+        policy.mark_notified("garage", clock.value)
+
+        response = policy.handle_command("IGNORAR")
+
+        self.assertIn("garage", response)
+        state = policy.snapshot()
+        self.assertTrue(state["incidents"]["garage"]["acknowledged"])
+        self.assertTrue(state["incidents"]["garage"]["false_positive"])
+        self.assertEqual(state["false_positives"][0]["evidence_path"], "shadow.jpg")
+        self.assertEqual(policy.due_notifications(clock.value + 300), [])
+
+        restored = self.controller(clock)
+        self.assertEqual(
+            restored.snapshot()["false_positives"][0]["incident_id"],
+            state["incidents"]["garage"]["id"],
+        )
+
+    def test_ignore_can_target_a_camera_after_incident_closed(self):
+        clock = Clock(self.local_epoch(12))
+        policy = self.controller(clock, incidents={"close_after_seconds": 5})
+        policy.set_manual("armed_away", clock.value)
+        policy.record_detection(
+            "backyard", "exterior", "presence", "shadow.jpg",
+            datetime.fromtimestamp(clock.value).astimezone(),
+        )
+        clock.value += 6
+        policy.tick(clock.value)
+
+        response = policy.handle_command("/ignore backyard")
+
+        self.assertIn("backyard", response)
+        self.assertTrue(policy.snapshot()["incidents"]["backyard"]["false_positive"])
+
     def test_pause_and_operator_controls_survive_restart(self):
         clock = Clock(self.local_epoch(12))
         policy = self.controller(clock)
